@@ -15,9 +15,11 @@ that used to cost 100,000 characters costs about 600.
 
 Everything in this file talks to a Chrome that is **already running and
 already logged in**. We attach to it; we never launch a fresh browser and we
-never touch cookies or credentials. Start Chrome once with:
+never touch cookies or credentials. Start Chrome once with the two flags
+below (see `config/cdp.setup.md` for the Windows/macOS/Linux launch commands
+in full):
 
-    chrome.exe --remote-debugging-port=9222 --user-data-dir="C:\\local_data\\chrome-agent-profile"
+    --remote-debugging-port=9222 --user-data-dir=<a profile dir just for this>
 
 Recent Chrome refuses `--remote-debugging-port` on the default profile
 directory, which is why the dedicated `--user-data-dir` is not optional. Log

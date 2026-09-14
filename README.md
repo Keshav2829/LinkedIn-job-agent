@@ -20,12 +20,15 @@ agent asks *"what should I do next?"* instead of re-reading everything it's done
 
 ## Install
 
-```powershell
-cd C:\local_data\linkedinAgent
+```bash
+cd /path/to/linkedinAgent
 python -m jobagent init
 ```
 
-Python 3.9+, no third-party dependencies.
+Python 3.9+, no third-party dependencies. All commands in these docs are
+written as `python -m ...` — on macOS/Linux with no `python` on `PATH`
+(common on stock macOS and most Debian/Ubuntu installs), substitute `python3`
+everywhere.
 
 Then install the plugin so the skills are available to Claude, or just point
 Claude at this folder and name the skill you want.
@@ -109,11 +112,12 @@ question it can't answer, it skips that application with
 `--reason needs_human:<question>` and puts the question in its report. Answer it
 once with `answers set` and it never comes up again.
 
-To make it recur, create a **scheduled task** (not local cron, which dies with
-the session) firing weekday mornings in your timezone, bound to this computer,
-with a prompt naming the subagent and this folder. The run needs the machine
-awake, the desktop app running, and Chrome logged into LinkedIn — it fails
-loudly rather than queuing if not.
+To make it recur, create a **scheduled task bound to this computer** — Windows
+Task Scheduler, or `cron`/`launchd` on macOS/Linux **run against this machine,
+not a session-local cron that dies when the session ends** — firing weekday
+mornings in your timezone, with a prompt naming the subagent and this folder.
+The run needs the machine awake, the desktop app running, and Chrome logged
+into LinkedIn — it fails loudly rather than queuing if not.
 
 ---
 

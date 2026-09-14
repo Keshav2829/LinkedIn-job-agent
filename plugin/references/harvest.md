@@ -18,12 +18,14 @@ files instead of asking the agent to describe itself afterwards.
 
 ## Running it
 
-```powershell
+```bash
 python -m jobagent harvest
 ```
 
 With no arguments it finds this project's sessions under `~/.claude/projects/`
-by itself, joins them to `data/traces/`, and writes to `data/sft/`.
+by itself (Windows: `%USERPROFILE%\.claude\projects\`, resolved the same way
+via `Path.home()` — no flag needed on any OS), joins them to `data/traces/`,
+and writes to `data/sft/`.
 
 Both `data/traces/` and `data/sft/` are organised one folder per calendar day, one file (or file-set) per session inside it — `data/traces/<day>/<session-time>.jsonl` for trace logs, `data/sft/<day>/<harvest-time>-harvest.*` for harvest output — so multiple sessions on the same day never commingle or silently overwrite one another.
 
@@ -31,18 +33,26 @@ It does **not** guess the project folder's slug — the slugify rule has changed
 between Claude Code versions. Every transcript records its own `cwd`, so the
 files are asked which project they belong to.
 
-```powershell
+```bash
 # a corpus ready for supervised fine-tuning, browser actions only,
 # with the screenshots copied in so the folder is self-contained
 python -m jobagent harvest --format messages --kind browse --copy-images
 
 # a specific session, or a folder you copied elsewhere
-python -m jobagent harvest --transcript path\to\<session-id>.jsonl
-python -m jobagent harvest --transcript path\to\folder\
+python -m jobagent harvest --transcript path/to/<session-id>.jsonl
+python -m jobagent harvest --transcript path/to/folder/
 
-# Claude Code running under WSL keeps its config in the Linux home
-python -m jobagent harvest --claude-dir \\wsl$\Ubuntu\home\you\.claude
+# --claude-dir overrides where ~/.claude is looked up, for any OS — e.g.
+# Claude Code running under WSL keeps its config in the Linux home, not the
+# Windows one this same command would otherwise resolve to from PowerShell
+python -m jobagent harvest --claude-dir /home/you/.claude
 ```
+
+`--claude-dir` (or the `CLAUDE_CONFIG_DIR` env var) takes any path your shell
+can express, so a WSL config reached from Windows would instead be
+`\\wsl$\Ubuntu\home\you\.claude` — that form is WSL/Windows-specific; on
+macOS or native Linux the default `~/.claude` already resolves correctly with
+no override needed.
 
 Useful flags: `--kind` (repeatable — `browse` for every browser action, or an
 exact kind like `browse.click`), `--subagents-only` (the real work happens in
@@ -174,8 +184,8 @@ the record shape documented above) is the write side: a browser UI over one
 `.steps.jsonl` that a human uses to turn a harvested corpus into an actual
 fine-tuning dataset.
 
-```powershell
-python -m annotation_suite serve data\sft\2026-09-06\14-32-05-harvest.steps.jsonl
+```bash
+python -m annotation_suite serve data/sft/2026-09-06/14-32-05-harvest.steps.jsonl
 ```
 
 Per record it can: edit any field worth correcting (`observation.text`,
@@ -235,10 +245,10 @@ A 265-record JSONL is not something you can eyeball, and the parts most
 likely to be broken look fine in a text editor. `tools/view_harvest.py`
 renders a corpus as a browsable page and runs the checks:
 
-```powershell
-python tools\view_harvest.py data\sft\2026-09-06\14-32-05-harvest.steps.jsonl
-python tools\view_harvest.py data\sft\2026-09-06\14-32-05-harvest.steps.jsonl --kind browse --only-serious
-python tools\view_harvest.py data\sft\2026-09-06\14-32-05-harvest.messages.jsonl --embed
+```bash
+python tools/view_harvest.py data/sft/2026-09-06/14-32-05-harvest.steps.jsonl
+python tools/view_harvest.py data/sft/2026-09-06/14-32-05-harvest.steps.jsonl --kind browse --only-serious
+python tools/view_harvest.py data/sft/2026-09-06/14-32-05-harvest.messages.jsonl --embed
 ```
 
 It writes `<input>.html` beside the input and prints a tally. Each record

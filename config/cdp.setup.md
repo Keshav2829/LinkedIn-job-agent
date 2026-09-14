@@ -15,7 +15,7 @@ answer is printed. A `find` costs about 600 characters instead of 100,000.
 
 ## 1. Install Playwright
 
-```powershell
+```bash
 pip install playwright
 ```
 
@@ -24,11 +24,33 @@ the Chrome you already have, so there is no browser to download.
 
 ## 2. Start Chrome with debugging on
 
+Pick a profile directory anywhere you like; the examples below use a folder
+under your home directory so the command needs no editing per machine.
+
+**Windows (PowerShell):**
 ```powershell
 & "C:\Program Files\Google\Chrome\Application\chrome.exe" `
     --remote-debugging-port=9222 `
-    --user-data-dir="C:\local_data\chrome-agent-profile"
+    --user-data-dir="$env:USERPROFILE\chrome-agent-profile"
 ```
+
+**macOS:**
+```bash
+open -a "Google Chrome" --args \
+    --remote-debugging-port=9222 \
+    --user-data-dir="$HOME/chrome-agent-profile"
+```
+(`open -a` on a running Chrome ignores new flags — quit Chrome fully first,
+or launch the binary directly: `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`
+with the same two flags.)
+
+**Linux:**
+```bash
+google-chrome \
+    --remote-debugging-port=9222 \
+    --user-data-dir="$HOME/chrome-agent-profile"
+```
+(binary may be `google-chrome-stable` or `chromium` depending on distro/package)
 
 The separate `--user-data-dir` is **not optional**. Chrome 136 and later
 refuse `--remote-debugging-port` on your default profile — a deliberate
@@ -39,12 +61,14 @@ none of your normal extensions or history. **Log into LinkedIn once in it.**
 The profile folder persists, so you only do this once; every later launch of
 that same command comes up already signed in.
 
-Keep the command somewhere you can re-run it — a `.lnk` shortcut with those
-flags in the Target field is the least annoying option.
+Keep the command somewhere you can re-run it: a `.lnk` shortcut (Windows,
+flags in the Target field), a saved `.command` file or shell alias (macOS), or
+a shell alias / `.desktop` launcher (Linux) are all the same idea — a
+one-click or one-word way to start Chrome with the two flags already on it.
 
 ## 3. Verify
 
-```powershell
+```bash
 python -m jobagent browse status
 ```
 
@@ -58,7 +82,7 @@ you started with the command above is still open.
 Everything speaks the verbs in `plugin/references/browser-adapter.md`. The raw
 commands, if you want to drive it by hand:
 
-```powershell
+```bash
 python -m jobagent browse open --url "https://www.linkedin.com/jobs/search/?keywords=AI+Engineer"
 python -m jobagent browse outline                    # → where am I, refs i1, i2, … + job URLs
 python -m jobagent browse open --url "https://www.linkedin.com/jobs/view/4021553311/"
@@ -66,7 +90,7 @@ python -m jobagent browse find -q "Easy Apply"       # → refs e1, e2, …
 python -m jobagent browse click --ref e1
 python -m jobagent browse form                       # → the whole Easy Apply panel
 python -m jobagent browse fill --ref f1 --value "9876543210"
-python -m jobagent browse upload --ref f4 --path data\resume.pdf.pdf
+python -m jobagent browse upload --ref f4 --path data/resume.pdf
 python -m jobagent browse shot --label ibm-attach_resume
 ```
 

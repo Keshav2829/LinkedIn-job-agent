@@ -13,14 +13,14 @@ No dependencies beyond the Python standard library and, optionally, the
 
 ## Run it
 
-```powershell
-python -m annotation_suite serve   data\sft\2026-09-06\14-32-05-harvest.steps.jsonl
-python -m annotation_suite export  data\sft\2026-09-06\14-32-05-harvest.steps.jsonl --format messages
-python -m annotation_suite stats   data\sft\2026-09-06\14-32-05-harvest.steps.jsonl
+```bash
+python -m annotation_suite serve   data/sft/2026-09-06/14-32-05-harvest.steps.jsonl
+python -m annotation_suite export  data/sft/2026-09-06/14-32-05-harvest.steps.jsonl --format messages
+python -m annotation_suite stats   data/sft/2026-09-06/14-32-05-harvest.steps.jsonl
 ```
 
-(equivalently `python annotation_suite\annotate.py serve <file>` — it also
-runs as a plain script)
+(equivalently `python annotation_suite/annotate.py serve <file>` — it also
+runs as a plain script; forward slashes work in these paths on Windows too)
 
 `serve` opens a browser UI to walk the corpus task by task: edit any field
 worth correcting, mark a step kept or dropped, reward it -2..2, classify it

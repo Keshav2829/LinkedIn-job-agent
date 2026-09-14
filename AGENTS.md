@@ -6,6 +6,12 @@ every client reads the same files.
 
 Run every command from this folder (the one containing `jobagent/`).
 
+Every command below is written as `python -m ...`. Most macOS and Linux
+installs (stock macOS with no Homebrew, most Debian/Ubuntu systems) have no
+`python` on `PATH`, only `python3` — if `python -m jobagent ...` says
+"command not found," use `python3` instead for every command in this repo's
+docs. Windows almost always has `python` (and it's what the setup docs use).
+
 ## Where the substance lives
 
 | | |
@@ -176,6 +182,13 @@ lost. Two clients running at once on different copies will diverge — don't.
 
 `plugin/` is the source. After editing a skill:
 
+**macOS / Linux:**
+```bash
+cp -r plugin/skills/* .claude/skills/
+cp plugin/agents/linkedin-agent.md .claude/agents/
+```
+
+**Windows (PowerShell):**
 ```powershell
 Copy-Item plugin\skills\* .claude\skills\ -Recurse -Force
 Copy-Item plugin\agents\linkedin-agent.md .claude\agents\ -Force

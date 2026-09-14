@@ -1,6 +1,6 @@
 # `jobagent` command reference
 
-Run from the project root (`C:\local_data\linkedinAgent`):
+Run from the project root — wherever this repo is checked out:
 
 ```bash
 python -m jobagent <group> <action> [flags]

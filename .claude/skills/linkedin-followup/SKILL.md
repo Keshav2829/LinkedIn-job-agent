@@ -57,7 +57,7 @@ Branch on `role_type`:
 
 ```bash
 python -m jobagent outreach draft --contact-url <url> --kind hr_pitch --job-id 4021553311 \
-  --attachment "C:\local_data\linkedinAgent\data\resume.pdf" \
+  --attachment "data/resume.pdf" \
   --extra '{"one_specific_reason":"your posting mentions idempotent webhooks — I rebuilt exactly that at Acme last year"}'
 ```
 

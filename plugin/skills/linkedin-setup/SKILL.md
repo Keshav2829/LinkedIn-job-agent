@@ -66,7 +66,7 @@ disagree, ask which is right.
 Record the path so applications and attachments can find it:
 
 ```bash
-python -m jobagent profile set --json '{"resume_path":"C:\\local_data\\linkedinAgent\\data\\resume.pdf","resume_name":"Keshav_Agrawal_Resume.pdf"}'
+python -m jobagent profile set --json '{"resume_path":"data/resume.pdf","resume_name":"Keshav_Agrawal_Resume.pdf"}'
 ```
 
 The `resume_name` matters: on the Easy Apply resume step the agent picks the

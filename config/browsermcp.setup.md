@@ -36,7 +36,14 @@ Same JSON everywhere:
 }
 ```
 
-**Claude Desktop (Windows)** — `%APPDATA%\Claude\claude_desktop_config.json`.
+**Claude Desktop** — the config file's location is OS-specific:
+
+| OS | Path |
+|---|---|
+| Windows | `%APPDATA%\Claude\claude_desktop_config.json` |
+| macOS | `~/Library/Application Support/Claude/claude_desktop_config.json` |
+| Linux | `~/.config/Claude/claude_desktop_config.json` |
+
 Create the file if it doesn't exist; merge the `browsermcp` key into any
 existing `mcpServers` object rather than replacing it. Restart Claude Desktop.
 A known issue starts the server twice and may show an error on launch; the

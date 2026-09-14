@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """Render a harvested corpus as a browsable HTML page, and flag what looks wrong.
 
 A JSONL file with 265 records is not something you can eyeball, and the parts

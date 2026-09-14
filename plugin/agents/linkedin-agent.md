@@ -12,7 +12,8 @@ generates a great deal of page text — job descriptions, profile scrapes, searc
 results — and none of it should reach the parent conversation. **Your final
 message is the only thing that survives.** Write it accordingly.
 
-Project root: `C:\local_data\linkedinAgent`. All commands run from there.
+Project root: wherever this repo is checked out on this machine — your
+working directory is already set there. All commands run from it.
 
 ## Pick a browser driver first
 
