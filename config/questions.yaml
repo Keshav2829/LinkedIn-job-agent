@@ -1,0 +1,260 @@
+# Onboarding battery for `linkedin-setup`.
+#
+# Rounds map 1:1 onto AskUserQuestion calls (max 4 questions each), so the user
+# answers in a handful of clicks instead of a wall of text. Anything the setup
+# skill already scraped from the LinkedIn profile or parsed from the resume is
+# pre-filled and only confirmed, never re-asked.
+#
+# `store: answers` -> `jobagent answers set --key <key>`
+# `store: prefs`   -> merged into `jobagent prefs set`
+# `store: config`  -> merged into `jobagent config set`
+
+rounds:
+
+  - id: confirm_basics
+    title: Confirm what we read off your profile
+    note: Pre-fill every option from the scraped profile; ask only to confirm or correct.
+    questions:
+      - key: current_title
+        store: answers
+        ask: "Is this your current title?"
+        kind: text
+      - key: total_experience_years
+        store: answers
+        ask: "Total years of professional experience"
+        kind: number
+      - key: city
+        store: answers
+        ask: "Where are you based right now?"
+        kind: text
+      - key: phone
+        store: answers
+        ask: "Best contact number (with country code)"
+        kind: text
+
+  - id: work_auth
+    title: Work authorisation
+    questions:
+      - key: authorized_to_work
+        store: answers
+        ask: "Are you legally authorized to work in your target country?"
+        kind: bool
+        options: [Yes, No]
+      - key: requires_sponsorship
+        store: answers
+        ask: "Will you now or in future need visa sponsorship?"
+        kind: bool
+        options: [No, Yes]
+      - key: legal_age
+        store: answers
+        ask: "Are you 18 or older?"
+        kind: bool
+        options: [Yes, No]
+      - key: work_permit_country
+        store: answers
+        ask: "Which countries can you work in without a permit?"
+        kind: text
+
+  - id: current_role
+    title: Current role and money
+    note: CTC answers are stored locally only; they never leave the machine except into a form you approved.
+    questions:
+      - key: current_company
+        store: answers
+        ask: "Current employer"
+        kind: text
+      - key: current_ctc
+        store: answers
+        ask: "Current annual CTC (e.g. '28 LPA' or '₹2,800,000')"
+        kind: text
+      - key: expected_ctc
+        store: answers
+        ask: "Expected annual CTC"
+        kind: text
+      - key: notice_period
+        store: answers
+        ask: "Notice period / earliest start date"
+        kind: text
+        common: ["Immediate", "15 days", "30 days", "60 days", "90 days"]
+
+  - id: mobility
+    title: Where and how you'll work
+    questions:
+      - key: preferred_work_mode
+        store: answers
+        ask: "Preferred work mode"
+        kind: choice
+        options: [Hybrid, Remote, Onsite, "No preference"]
+      - key: willing_to_relocate
+        store: answers
+        ask: "Open to relocating for the right role?"
+        kind: bool
+        options: [Yes, No]
+      - key: locations
+        store: prefs
+        ask: "Which cities should I search? (comma separated)"
+        kind: list
+      - key: willing_to_travel
+        store: answers
+        ask: "Willingness to travel"
+        kind: choice
+        options: ["None", "Up to 25%", "Up to 50%", "Whatever the role needs"]
+
+  - id: legal
+    title: The compliance checkboxes every form asks
+    questions:
+      - key: non_compete
+        store: answers
+        ask: "Are you bound by a non-compete agreement?"
+        kind: bool
+        options: [No, Yes]
+      - key: confidentiality_agreement
+        store: answers
+        ask: "Any confidentiality/NDA that would limit this work?"
+        kind: bool
+        options: [No, Yes]
+      - key: family_at_company
+        store: answers
+        ask: "Default answer for 'do you have a relative at this company?'"
+        kind: bool
+        options: [No, Yes]
+        note: The agent overrides this per-company if it knows otherwise.
+      - key: background_check_consent
+        store: answers
+        ask: "Consent to background verification?"
+        kind: bool
+        options: [Yes, No]
+
+  - id: eeo
+    title: Voluntary demographic questions
+    note: Defaults to "Prefer not to say" — these are optional on every form.
+    questions:
+      - key: gender
+        store: answers
+        ask: "Gender (voluntary)"
+        kind: choice
+        options: ["Prefer not to say", Male, Female, "Non-binary"]
+      - key: veteran_status
+        store: answers
+        ask: "Veteran status (voluntary)"
+        kind: choice
+        options: ["Prefer not to say", "Not a veteran", "Veteran"]
+      - key: disability_status
+        store: answers
+        ask: "Disability status (voluntary)"
+        kind: choice
+        options: ["Prefer not to say", "No", "Yes"]
+      - key: ethnicity
+        store: answers
+        ask: "Race / ethnicity (voluntary)"
+        kind: choice
+        options: ["Prefer not to say"]
+
+  - id: skills_languages
+    title: Skills and languages
+    note: Seed the options from the resume + profile skills section; the user prunes.
+    questions:
+      - key: skills
+        store: profile
+        ask: "Your top skills, strongest first"
+        kind: list
+      - key: languages
+        store: profile
+        ask: "Languages and proficiency (e.g. 'English: Professional, Hindi: Native')"
+        kind: list
+
+  - id: targets
+    title: What you actually want
+    questions:
+      - key: target_titles
+        store: prefs
+        ask: "Which job titles should I search for?"
+        kind: list
+      - key: exclude_keywords
+        store: prefs
+        ask: "Words that should disqualify a posting"
+        kind: list
+        common: ["unpaid", "commission only", "intern", "night shift", ".NET", "PHP"]
+      - key: company_blacklist
+        store: prefs
+        ask: "Companies to never apply to"
+        kind: list
+      - key: dealbreakers
+        store: prefs
+        ask: "Hard dealbreakers in a job description"
+        kind: list
+
+  - id: company_shape
+    title: What kind of company
+    questions:
+      - key: company_kind
+        store: prefs
+        ask: "Product or service companies?"
+        kind: choice
+        options: [product, service, both, any]
+      - key: mnc_preference
+        store: prefs
+        ask: "MNC, Indian-origin, or no preference?"
+        kind: choice
+        options: ["No preference", "MNC only", "Indian companies", "Startups only"]
+      - key: headcount_band
+        store: prefs
+        ask: "How large should the company be?"
+        kind: choice
+        options:
+          - { label: "Startup (< 200)", min_headcount: 1, max_headcount: 200 }
+          - { label: "Mid-size (200 – 5,000)", min_headcount: 200, max_headcount: 5000 }
+          - { label: "Large (5,000 +)", min_headcount: 5000, max_headcount: null }
+          - { label: "No preference", min_headcount: null, max_headcount: null }
+      - key: industries
+        store: prefs
+        ask: "Industries you'd prefer (blank = any)"
+        kind: list
+
+  - id: run_settings
+    title: How the agent should run
+    questions:
+      - key: daily_applications
+        store: config
+        ask: "How many jobs should I apply to per run?"
+        kind: number
+        options: [5, 10, 15, 25]
+        default: 10
+      - key: daily_invites
+        store: config
+        ask: "How many connection requests per run?"
+        kind: number
+        options: [5, 15, 25]
+        default: 15
+      - key: auto_apply_min_score
+        store: config
+        ask: "Minimum match score to apply without asking me"
+        kind: number
+        options: [60, 70, 80, 90]
+        default: 70
+      - key: outreach_requires_approval
+        store: config
+        ask: "Should I show you every message before it goes out?"
+        kind: bool
+        options: [Yes, No]
+        default: true
+
+  - id: narrative
+    title: Your pitch
+    note: >
+      Ask these as open text, not multiple choice. The agent adapts them per job —
+      they are the seed, not the final copy.
+    questions:
+      - key: summary
+        store: answers
+        ask: "Two sentences on what you do and what you're good at"
+        kind: text
+      - key: why_this_role
+        store: answers
+        ask: "What generally draws you to a role? (used as the base for 'why us')"
+        kind: text
+      - key: heard_about_us
+        store: answers
+        ask: "Default answer for 'how did you hear about this job?'"
+        kind: choice
+        options: ["LinkedIn", "Company website", "Referral", "Job board"]

@@ -1,0 +1,7 @@
+{
+  "name": "linkedin-job-agent",
+  "version": "0.1.0",
+  "description": "Searches, scores and applies to LinkedIn jobs, runs referral and recruiter outreach with human approval, and remembers everything in a local SQLite store.",
+  "author": { "name": "Keshav Agrawal" },
+  "keywords": ["linkedin", "job-search", "outreach", "referral", "automation"]
+}

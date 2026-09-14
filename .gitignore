@@ -1,0 +1,15 @@
+# The store holds your CTC, phone number and every message sent. Never commit it.
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# Resumes
+*.pdf
+*.docx
+
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.DS_Store

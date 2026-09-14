@@ -1,0 +1,785 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>annotation suite</title>
+<style>
+:root{--bg:#fbfbfa;--fg:#1c1c1a;--mut:#6b6b66;--line:#e3e3df;--card:#fff;
+      --warn:#8a5300;--warnbg:#fff8e8;--bad:#8c2f18;--badbg:#fdf0ec;
+      --good:#276b3f;--goodbg:#eef8f0;
+      --code:#f4f4f1;--accent:#2b5f8a;--accent2:#7a4fae}
+@media(prefers-color-scheme:dark){:root{--bg:#161614;--fg:#eceae4;--mut:#9c9a92;
+      --line:#302e2a;--card:#1e1c19;--warn:#e0b060;--warnbg:#2a2114;
+      --bad:#e08a70;--badbg:#2b1a15;--good:#7fcb9a;--goodbg:#132a1c;
+      --code:#26241f;--accent:#7fb0d8;--accent2:#c3a6ec}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);
+     font:14px/1.5 ui-sans-serif,-apple-system,Segoe UI,Roboto,sans-serif}
+header{position:sticky;top:0;z-index:5;background:var(--bg);border-bottom:1px solid var(--line);padding:10px 16px}
+h1{font-size:15px;margin:0 0 6px;display:flex;gap:10px;align-items:baseline}
+h1 small{color:var(--mut);font-weight:400;font-size:12px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:6px}
+select,input,button,textarea{font:inherit;padding:5px 8px;border:1px solid var(--line);
+     border-radius:6px;background:var(--card);color:var(--fg)}
+input[type=search]{min-width:180px}
+button{cursor:pointer}
+button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+button.ghost{background:transparent}
+button:disabled{opacity:.5;cursor:default}
+label.chk{display:flex;gap:5px;align-items:center;color:var(--mut);font-size:12.5px;white-space:nowrap}
+.tabs{display:flex;gap:4px}
+.tabs button{border-radius:20px;padding:4px 12px;font-size:12.5px}
+.tabs button.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+.spacer{flex:1}
+.sum{color:var(--mut);font-size:12.5px}
+main{padding:14px 16px;max-width:1300px;margin:0 auto}
+table{width:100%;border-collapse:collapse;font-size:13px;background:var(--card);
+      border:1px solid var(--line);border-radius:8px;overflow:hidden}
+th,td{padding:6px 9px;text-align:left;border-bottom:1px solid var(--line)}
+th{color:var(--mut);font-weight:600;font-size:11.5px;text-transform:uppercase;letter-spacing:.04em}
+tbody tr{cursor:pointer}
+tbody tr:hover{background:var(--code)}
+tr.deleted{opacity:.45;text-decoration:line-through}
+.tag{display:inline-block;font-size:11px;border:1px solid var(--line);border-radius:20px;
+     padding:1px 7px;margin-right:3px;color:var(--mut)}
+.tag.fail{color:var(--bad);border-color:var(--bad)}
+.tag.warn{color:var(--warn);border-color:var(--warn)}
+.badge-reward{display:inline-block;min-width:22px;text-align:center;border-radius:5px;
+      padding:1px 5px;font-weight:700;font-size:12px}
+.rw--2,.rw--1{background:var(--badbg);color:var(--bad)}
+.rw-0{background:var(--code);color:var(--mut)}
+.rw-1,.rw-2{background:var(--goodbg);color:var(--good)}
+.review{display:grid;grid-template-columns:1fr;gap:12px}
+@media(min-width:920px){.review{grid-template-columns:1fr 320px}}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px;margin-bottom:12px}
+.card h3{margin:0 0 8px;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--mut);
+         display:flex;justify-content:space-between;align-items:center}
+.card h3 .hint{font-size:11px;color:var(--mut);text-transform:none;letter-spacing:0;font-weight:400}
+textarea,.mono{width:100%;font:12.5px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;
+      background:var(--code);border-radius:7px;padding:9px 11px;resize:vertical;min-height:64px}
+textarea:focus{outline:2px solid var(--accent)}
+.fieldgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px;margin-bottom:8px}
+.fieldgrid label{display:block;font-size:11px;color:var(--mut);margin-bottom:2px}
+.fieldgrid input{width:100%}
+.warns{background:var(--warnbg);border-radius:7px;padding:8px 11px;font-size:12.5px;color:var(--warn);margin-top:8px}
+.warns.bad{background:var(--badbg);color:var(--bad)}
+.warns li{margin-left:16px}
+.shot img{width:100%;border:1px solid var(--line);border-radius:7px;display:block;margin-bottom:6px;cursor:zoom-in}
+.shot-actions button{padding:2px 7px;font-size:11px}
+.shot-name{word-break:break-all;margin-bottom:6px}
+.reward-row{display:flex;gap:6px;margin-bottom:10px}
+.reward-row button{flex:1;padding:8px 0;border-radius:8px;font-weight:700}
+.reward-row button.sel{outline:2px solid var(--fg)}
+.chips{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:8px}
+.chip{border:1px solid var(--line);border-radius:20px;padding:3px 10px;font-size:12px;cursor:pointer;background:var(--card)}
+.chip.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+.navbar{display:flex;align-items:center;gap:8px;margin-bottom:2px}
+.navbar .pos{font-variant-numeric:tabular-nums;color:var(--mut);font-size:12.5px}
+.sessionmeta{color:var(--mut);font-size:12px;margin-bottom:10px}
+.episodes{margin-top:4px;padding:6px 9px;background:var(--warnbg);color:var(--warn);
+     border-radius:6px;font-size:11.5px;line-height:1.6}
+.sessioninfo{padding:8px 12px;margin-bottom:8px;background:var(--code);border-radius:8px;
+     color:var(--mut);font-size:12.5px}
+tr.sess-divider td{background:var(--code);color:var(--accent);font-weight:600;font-size:11.5px;
+     text-transform:uppercase;letter-spacing:.04em;padding:6px 9px;border-bottom:1px solid var(--line)}
+.toast{position:fixed;bottom:16px;right:16px;background:var(--fg);color:var(--bg);
+       padding:8px 14px;border-radius:8px;font-size:12.5px;opacity:0;transition:opacity .25s;pointer-events:none}
+.toast.show{opacity:.92}
+.help{font-size:12px;color:var(--mut);line-height:1.7}
+.help kbd{background:var(--code);border:1px solid var(--line);border-radius:4px;padding:0 5px;font-family:ui-monospace,monospace}
+.progressbar{height:6px;background:var(--code);border-radius:4px;overflow:hidden;margin:6px 0}
+.progressbar > div{height:100%;background:var(--accent)}
+.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.35);display:flex;align-items:center;justify-content:center;z-index:20}
+.modal{background:var(--card);border-radius:10px;padding:18px;width:min(440px,92vw);border:1px solid var(--line)}
+.modal.wide{width:min(1100px,94vw)}
+.modal.wide img{width:100%;border-radius:7px;display:block}
+.modal h2{margin:0 0 10px;font-size:14px}
+.modal .row{margin-bottom:10px}
+.none{color:var(--mut);font-style:italic}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+
+<header>
+  <h1 id="title">annotation suite <small id="subtitle">loading…</small></h1>
+  <div class="row" id="filterRow">
+    <input type="search" id="q" placeholder="search text…" style="min-width:200px">
+    <select id="f_kind"><option value="">all kinds</option></select>
+    <select id="f_thinking"><option value="">any reasoning</option>
+      <option value="present">present</option><option value="stripped">stripped</option>
+      <option value="absent">absent</option></select>
+    <select id="f_task" style="max-width:260px"></select>
+    <select id="f_session" style="max-width:340px"></select>
+    <select id="f_status"><option value="">kept + deleted</option>
+      <option value="kept">kept only</option><option value="deleted">deleted only</option></select>
+    <select id="f_example_type"><option value="">any example type</option></select>
+    <select id="f_min_reward"><option value="">any reward</option>
+      <option value="-2">reward ≥ -2</option><option value="-1">reward ≥ -1</option>
+      <option value="0">reward ≥ 0</option><option value="1">reward ≥ 1</option>
+      <option value="2">reward = 2</option></select>
+    <label class="chk"><input type="checkbox" id="f_warn"> warnings only</label>
+    <label class="chk"><input type="checkbox" id="f_unreviewed"> unreviewed only</label>
+    <label class="chk">from&nbsp;<input type="datetime-local" id="f_start" style="min-width:170px"></label>
+    <label class="chk">to&nbsp;<input type="datetime-local" id="f_end" style="min-width:170px"></label>
+  </div>
+  <div class="row">
+    <span class="sum" id="sessionHint">…</span>
+  </div>
+  <div class="row">
+    <div class="tabs">
+      <button id="tabGrid" class="active">Grid</button>
+      <button id="tabReview">Review</button>
+    </div>
+    <span class="sum" id="stats">…</span>
+    <div class="spacer"></div>
+    <button id="btnBulk">Backfill thinking (bulk)</button>
+    <button id="btnExport" class="primary">Export corpus…</button>
+    <button id="btnHelp" class="ghost" title="keyboard shortcuts">?</button>
+  </div>
+</header>
+
+<main>
+  <section id="gridView"></section>
+  <section id="reviewView" hidden></section>
+</main>
+
+<div class="toast" id="toast"></div>
+<div id="modalRoot"></div>
+
+<script>
+const $ = (s, el=document) => el.querySelector(s);
+const $$ = (s, el=document) => [...el.querySelectorAll(s)];
+function esc(s){ return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function qenc(k){ return encodeURIComponent(k); }
+function shotName(shot) {
+  const raw = (shot && (shot.abs_path || shot.dataset_path || shot.path)) || '';
+  return String(raw).replace(/\\/g, '/').split('/').pop() || raw;
+}
+function fmtDate(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (isNaN(d)) return String(iso);
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+function sessionByID(sid) { return (CORPUS.sessions_detail || []).find(s => s.session_id === sid); }
+function taskByKey(taskId, episode) {
+  return (CORPUS.tasks || []).find(t => t.task_id === taskId && t.episode === episode);
+}
+// A session can bundle more than one episode: a sub-agent spawned from it
+// gets its own transcript (its own episode_id) but keeps the parent's
+// session_id, since Claude Code treats it as a nested call, not a separate
+// session. Spelling that out here is what turns "why did two runs merge
+// into one session" into something visibly explained instead of hidden.
+function episodesHtml(sess) {
+  if (!sess || !sess.episodes || sess.episodes.length <= 1) return '';
+  const rows = sess.episodes.map(e =>
+    `${e.is_subagent ? 'sub-agent' : 'main'} (${esc(e.episode_id.slice(0, 12))}…): ` +
+    `${fmtDate(e.start)} &rarr; ${fmtDate(e.end)}, ${e.count} steps`).join('<br>');
+  return `<div class="episodes">this session bundles ${sess.episode_count} episodes ` +
+    `(a sub-agent shares its parent's session_id):<br>${rows}</div>`;
+}
+
+let CORPUS = null;
+let MODE = 'grid';
+let ROWS = [];          // last fetched filtered rows (summary), in corpus order
+let POS = -1;           // index into ROWS for review mode
+let CURRENT = null;     // full merged record currently shown in review mode
+let saveTimers = {};
+
+async function api(method, path, body) {
+  const opts = { method };
+  if (body !== undefined) {
+    opts.headers = { 'Content-Type': 'application/json' };
+    opts.body = JSON.stringify(body);
+  }
+  const r = await fetch(path, opts);
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok && !data.error) data.error = `HTTP ${r.status}`;
+  return data;
+}
+
+function toast(msg, bad) {
+  const t = $('#toast');
+  t.textContent = msg;
+  t.style.background = bad ? 'var(--bad)' : 'var(--fg)';
+  t.classList.add('show');
+  clearTimeout(t._h);
+  t._h = setTimeout(() => t.classList.remove('show'), 1600);
+}
+
+// -------------------------------------------------------------- filters ---
+
+function isoFromLocalInput(val) {
+  // datetime-local has no timezone; treat it as the browser's local time and
+  // convert to the ISO string `ts` is stored in (UTC, same shape as utcnow()).
+  if (!val) return '';
+  const d = new Date(val);
+  return isNaN(d) ? '' : d.toISOString();
+}
+
+function currentFilters() {
+  return {
+    q: $('#q').value.trim(), kind: $('#f_kind').value, thinking: $('#f_thinking').value,
+    task: $('#f_task').value, session: $('#f_session').value, status: $('#f_status').value,
+    example_type: $('#f_example_type').value, min_reward: $('#f_min_reward').value,
+    warn: $('#f_warn').checked ? '1' : '0', unreviewed: $('#f_unreviewed').checked ? '1' : '0',
+    start: isoFromLocalInput($('#f_start').value), end: isoFromLocalInput($('#f_end').value),
+  };
+}
+
+function buildQuery(extra) {
+  const f = { ...currentFilters(), ...(extra || {}) };
+  const p = new URLSearchParams();
+  for (const [k, v] of Object.entries(f)) if (v !== '' && v != null) p.set(k, v);
+  return p.toString();
+}
+
+async function loadCorpus() {
+  CORPUS = await api('GET', '/api/corpus');
+  $('#subtitle').textContent = `${CORPUS.path.split(/[\\/]/).pop()} · ${CORPUS.count} records`;
+  fill('#f_kind', CORPUS.kinds);
+  fill('#f_example_type', CORPUS.vocab.example_types);
+  const taskSel = $('#f_task');
+  taskSel.innerHTML = '<option value="">all tasks</option>' + CORPUS.tasks.map(t =>
+    `<option value="${esc(t.task_id || '')}">${esc(t.task_id || '(none)')} — ${esc(t.goal || '').slice(0,40)} ` +
+    `(${t.count} steps, ${fmtDate(t.start)} → ${fmtDate(t.end)})</option>`).join('');
+
+  // Sessions are listed newest-first with their real start/end so it's clear
+  // where one run stops and the next begins — `jobagent harvest` re-walks the
+  // *entire* project history on every run (see plugin/references/harvest.md),
+  // so one file routinely mixes many past sessions. Defaulting to only the
+  // latest one is what keeps old runs from cluttering the current review.
+  const sessSel = $('#f_session');
+  const details = CORPUS.sessions_detail || [];
+  sessSel.innerHTML = `<option value="">all sessions (${details.length})</option>` +
+    details.map(s => `<option value="${esc(s.session_id)}">` +
+      `${fmtDate(s.start)} → ${fmtDate(s.end)} · ${s.count} steps · ${esc(s.skills.join(', '))}` +
+      `${s.session_id === CORPUS.latest_session ? ' — latest' : ''}</option>`).join('');
+  if (CORPUS.latest_session) sessSel.value = CORPUS.latest_session;
+
+  renderStats();
+  renderSessionHint();
+}
+
+function renderSessionHint() {
+  const sid = $('#f_session').value;
+  const el = $('#sessionHint');
+  if (!sid) {
+    el.innerHTML = `showing all ${(CORPUS.sessions_detail || []).length} sessions — pick one above to focus on a single run`;
+    return;
+  }
+  const s = sessionByID(sid);
+  if (!s) { el.innerHTML = ''; return; }
+  el.innerHTML = `showing only this session (${esc(s.session_id.slice(0, 8))}…): ` +
+    `${fmtDate(s.start)} → ${fmtDate(s.end)}, ${s.count} steps, ${s.task_count} tasks` +
+    (sid === CORPUS.latest_session ? ' — the most recent run in this file' : '') +
+    episodesHtml(s);
+}
+
+function fill(sel, labels, values) {
+  const el = $(sel);
+  const first = el.querySelector('option');
+  el.innerHTML = '';
+  el.appendChild(first);
+  labels.forEach((l, i) => {
+    const o = document.createElement('option');
+    o.value = (values ? values[i] : l);
+    o.textContent = l;
+    el.appendChild(o);
+  });
+}
+
+function renderStats() {
+  const th = CORPUS.thinking_counts, st = CORPUS.status_counts;
+  $('#stats').textContent =
+    `${st.kept} kept, ${st.deleted} deleted · reviewed ${CORPUS.reviewed}/${CORPUS.count} · ` +
+    `thinking: ${Object.entries(th).map(([k,v]) => `${v} ${k}`).join(', ')}`;
+}
+
+// ------------------------------------------------------------ grid view ---
+
+const GRID_COLS = 10;
+
+async function refreshGrid() {
+  const data = await api('GET', '/api/records?' + buildQuery({ limit: 5000 }));
+  ROWS = data.records;
+  const el = $('#gridView');
+  if (!ROWS.length) { el.innerHTML = '<p class="none">no records match these filters</p>'; return; }
+  const sid = $('#f_session').value;
+  const banner = sid ? `<div class="sessioninfo">${sessionBannerHtml(sid)}</div>` : '';
+  // With one session picked there's nothing to divide; with "all sessions"
+  // a divider row marks every place the session changes, in the corpus's
+  // own chronological order, so a run's start/end is visible at a glance
+  // instead of inferred from a session_id column.
+  const body = sid ? ROWS.map((r, i) => rowHtml(r, i)).join('') : rowsWithDividers(ROWS);
+  el.innerHTML = `${banner}<table><thead><tr>
+    <th>#</th><th>when</th><th>kind</th><th>skill / step</th><th>task</th><th>reasoning</th>
+    <th>reward</th><th>type</th><th>flags</th><th>preview</th></tr></thead>
+    <tbody>${body}</tbody></table>`;
+  $$('#gridView tbody tr[data-pos]').forEach(tr => tr.addEventListener('click', () => {
+    POS = +tr.dataset.pos; switchTab('review');
+  }));
+}
+
+function sessionBannerHtml(sid) {
+  const s = sessionByID(sid);
+  if (!s) return '';
+  return `Session ${esc(sid.slice(0, 8))}… &middot; ${fmtDate(s.start)} &rarr; ${fmtDate(s.end)} ` +
+    `&middot; ${s.count} steps across ${s.task_count} task(s) &middot; ${esc(s.skills.join(', '))}` +
+    episodesHtml(s);
+}
+
+function dividerHtml(sid) {
+  const s = sessionByID(sid);
+  const label = s
+    ? `Session start &mdash; ${esc((sid || '').slice(0, 8))}… &middot; ${fmtDate(s.start)} &rarr; ${fmtDate(s.end)} &middot; ${s.count} steps`
+    : `Session start &mdash; ${esc((sid || '(no session id)').slice(0, 8))}…`;
+  return `<tr class="sess-divider"><td colspan="${GRID_COLS}">${label}</td></tr>`;
+}
+
+function rowsWithDividers(rows) {
+  const parts = [];
+  let last;
+  rows.forEach((r, i) => {
+    if (r.session !== last) { parts.push(dividerHtml(r.session)); last = r.session; }
+    parts.push(rowHtml(r, i));
+  });
+  return parts.join('');
+}
+
+function rewardBadge(r) {
+  if (r == null) return '';
+  return `<span class="badge-reward rw-${r}">${r > 0 ? '+' + r : r}</span>`;
+}
+
+function rowHtml(r, i) {
+  const flags = [];
+  if (r.warnings) flags.push(`<span class="tag ${r.severe ? 'fail' : 'warn'}">${r.warnings} warn</span>`);
+  if (r.ok === false) flags.push('<span class="tag fail">failed</span>');
+  if (!r.has_screenshot && String(r.kind).startsWith('browse.')) flags.push('<span class="tag warn">no shot</span>');
+  return `<tr class="${r.status === 'deleted' ? 'deleted' : ''}" data-pos="${i}">
+    <td>${r.idx}</td>
+    <td class="sum" style="white-space:nowrap">${fmtDate(r.ts)}</td>
+    <td>${esc(r.kind)}</td>
+    <td>${esc(r.skill || '')}${r.step ? '<br><span class="sum">' + esc(r.step) + '</span>' : ''}</td>
+    <td>${esc((r.task_id || '').slice(0, 24))}</td>
+    <td>${esc(r.thinking_state)}${r.reviewed ? ' ✓' : ''}</td>
+    <td>${rewardBadge(r.reward)}</td>
+    <td>${esc(r.example_type || '')}</td>
+    <td>${flags.join(' ')}</td>
+    <td class="sum">${esc(r.preview)}</td></tr>`;
+}
+
+// ---------------------------------------------------------- review view ---
+
+async function refreshReviewList() {
+  const data = await api('GET', '/api/records?' + buildQuery({ limit: 5000 }));
+  ROWS = data.records;
+  if (POS < 0 || POS >= ROWS.length) POS = 0;
+}
+
+async function openReview(pos) {
+  if (!ROWS.length) { $('#reviewView').innerHTML = '<p class="none">no records match these filters</p>'; return; }
+  POS = Math.max(0, Math.min(pos, ROWS.length - 1));
+  const key = ROWS[POS].key;
+  CURRENT = await api('GET', '/api/records/' + qenc(key));
+  renderReview();
+}
+
+function sessionMetaHtml(r) {
+  const sid = (r.source || {}).session_id;
+  const sess = sid ? sessionByID(sid) : null;
+  const tsk = taskByKey(r.task.task_id, r.episode_id);
+  const parts = [];
+  parts.push(`this step: <b>${fmtDate(r.ts)}</b>`);
+  if (r.source && r.source.is_subagent) parts.push(`from a <b>sub-agent</b> episode (${esc((r.episode_id || '').slice(0, 12))}…)`);
+  if (sess) parts.push(`session ${esc(sid.slice(0, 8))}…: ${fmtDate(sess.start)} &rarr; ${fmtDate(sess.end)} (${sess.count} steps` +
+    (sess.episode_count > 1 ? `, ${sess.episode_count} episodes` : '') + ')' +
+    (sid === CORPUS.latest_session ? ' &mdash; latest' : ''));
+  if (tsk) parts.push(`task: ${fmtDate(tsk.start)} &rarr; ${fmtDate(tsk.end)} (${tsk.count} steps)`);
+  let html = parts.join(' &middot; ');
+  if (sess && sess.episode_count > 1) html += episodesHtml(sess);
+  return html;
+}
+
+function renderReview() {
+  const r = CURRENT, ann = r.annotation, obs = r.observation, act = r.action, res = r.result, task = r.task, th = r.thinking;
+  const el = $('#reviewView');
+  el.innerHTML = `
+    <div class="navbar">
+      <button id="navPrev">◀ prev</button>
+      <span class="pos">${POS + 1} / ${ROWS.length} &middot; row #${r._idx}</span>
+      <button id="navNext">next ▶</button>
+      <span class="spacer"></span>
+      <label class="chk"><input type="checkbox" id="reviewedChk" ${ann.reviewed ? 'checked' : ''}> reviewed</label>
+      <button id="delToggle">${r._deleted ? 'restore step' : 'delete step'}</button>
+    </div>
+    <div class="sessionmeta">${sessionMetaHtml(r)}</div>
+    <div class="review">
+      <div>
+        <div class="card">
+          <h3>context</h3>
+          <div class="fieldgrid">
+            <div><label>skill</label><input id="e_task.skill" value="${esc(task.skill || '')}"></div>
+            <div><label>step</label><input id="e_task.step" value="${esc(task.step || '')}"></div>
+            <div><label>task_id</label><input id="e_task.task_id" value="${esc(task.task_id || '')}"></div>
+            <div><label>plan_step</label><input id="e_task.plan_step" value="${esc(task.plan_step || '')}"></div>
+            <div><label>goal</label><input id="e_task.goal" value="${esc(task.goal || '')}"></div>
+            <div><label>url</label><input id="e_observation.url" value="${esc(obs.url || '')}"></div>
+          </div>
+        </div>
+        <div class="card">
+          <h3>observation — what the model saw</h3>
+          <textarea id="e_observation.text" rows="6"></textarea>
+          ${assistRow('observation.text')}
+        </div>
+        <div class="card">
+          <h3>thinking <span class="hint">state: ${esc(th.state)}${th.generated ? ' · generated by ' + esc(th.author || '?') : ''}</span></h3>
+          <textarea id="e_thinking.text" rows="5"></textarea>
+          <div class="row" style="margin-top:8px">
+            <button id="genThink">Generate via claude CLI</button>
+            <label class="chk"><input type="checkbox" id="genForce"> overwrite existing</label>
+            <span id="genStatus" class="sum"></span>
+          </div>
+          ${assistRow('thinking.text')}
+        </div>
+        <div class="card"><h3>rationale — what it said at the time</h3>
+          <textarea id="e_rationale" rows="4"></textarea>
+          ${assistRow('rationale')}</div>
+        <div class="card"><h3>action</h3>
+          <div class="fieldgrid">
+            <div><label>kind</label><input id="e_action.kind" value="${esc(act.kind || '')}"></div>
+          </div>
+          <textarea id="e_action.command" rows="2"></textarea>
+          ${assistRow('action.command')}
+          <label style="font-size:11px;color:var(--mut);display:block;margin:8px 0 2px">args (JSON)</label>
+          <textarea id="e_action.args" rows="3" class="mono"></textarea>
+        </div>
+        <div class="card"><h3>result</h3>
+          <label class="chk" style="margin-bottom:8px"><input type="checkbox" id="e_result.ok"> ok</label>
+          <textarea id="e_result.text" rows="4"></textarea>
+          ${assistRow('result.text')}
+        </div>
+        ${r._warnings.length ? `<div class="warns ${r._severe ? 'bad' : ''}"><ul>${r._warnings.map(w => `<li>${esc(w)}</li>`).join('')}</ul></div>` : ''}
+      </div>
+      <div>
+        <div class="card shot">
+          <h3>screenshot
+            ${r._has_screenshot ? `<span class="hint shot-actions">
+              <button id="shotOpen" class="ghost">open ⤢</button>
+              <button id="shotRemove" class="ghost">remove</button></span>`
+            : r._screenshot_exists ? `<span class="hint shot-actions">
+              <button id="shotRestore" class="ghost">restore</button></span>` : ''}
+          </h3>
+          ${r._has_screenshot ? `<div class="sum shot-name">${esc(shotName(obs.screenshot))}</div>
+            <img id="shotThumb" src="/api/screenshot/${qenc(r._key)}" alt="">`
+          : r._screenshot_exists ? `<p class="none">removed for this step — the file is untouched (${esc(shotName(obs.screenshot))}), other steps citing it are unaffected</p>`
+          : '<p class="none">none</p>'}
+        </div>
+        <div class="card">
+          <h3>reward</h3>
+          <div class="reward-row" id="rewardRow">
+            ${[-2,-1,0,1,2].map(n => `<button data-n="${n}" class="rw-${n} ${ann.reward===n?'sel':''}" title="${CORPUS.vocab.reward_labels[n]}">${n>0?'+'+n:n}</button>`).join('')}
+          </div>
+          <label style="font-size:11px;color:var(--mut)">example type</label>
+          <select id="exampleType" style="width:100%;margin-bottom:8px">
+            <option value="">—</option>
+            ${CORPUS.vocab.example_types.map(t => `<option value="${t}" ${ann.example_type===t?'selected':''}>${t}</option>`).join('')}
+          </select>
+          <label style="font-size:11px;color:var(--mut)">provenance of the claim</label>
+          <select id="provenance" style="width:100%;margin-bottom:8px">
+            <option value="">—</option>
+            ${CORPUS.vocab.provenance.map(t => `<option value="${t}" ${ann.provenance===t?'selected':''}>${t}</option>`).join('')}
+          </select>
+          <label style="font-size:11px;color:var(--mut)">tags</label>
+          <div class="chips" id="tagChips">
+            ${CORPUS.vocab.tags.map(t => `<span class="chip ${(ann.tags||[]).includes(t)?'on':''}" data-tag="${t}">${t}</span>`).join('')}
+          </div>
+          <label style="font-size:11px;color:var(--mut)">note</label>
+          <textarea id="note" rows="3">${esc(ann.note || '')}</textarea>
+        </div>
+      </div>
+    </div>`;
+
+  // fill text-bearing fields via .value (never innerHTML) so nothing scraped can execute
+  $('#e_observation\\.text').value = obs.text || '';
+  $('#e_thinking\\.text').value = th.text || th.placeholder || '';
+  $('#e_rationale').value = r.rationale || '';
+  $('#e_action\\.command').value = act.command || '';
+  $('#e_action\\.args').value = JSON.stringify(act.args || {}, null, 1);
+  $('#e_result\\.text').value = res.text || '';
+  $('#e_result\\.ok').checked = res.ok !== false;
+
+  $$('.review [id^="e_"]').forEach(elm => elm.addEventListener('blur', () => saveEdit(elm)));
+  $('#navPrev').onclick = () => openReview(POS - 1);
+  $('#navNext').onclick = () => openReview(POS + 1);
+  $('#delToggle').onclick = () => patchAnn({ status: r._deleted ? 'kept' : 'deleted' }).then(() => openReview(POS));
+  $('#reviewedChk').onchange = e => patchAnn({ reviewed: e.target.checked });
+  $$('#rewardRow button').forEach(b => b.onclick = () => patchAnn({ reward: +b.dataset.n }).then(() => openReview(POS)));
+  $('#exampleType').onchange = e => patchAnn({ example_type: e.target.value || null });
+  $('#provenance').onchange = e => patchAnn({ provenance: e.target.value || null });
+  $$('#tagChips .chip').forEach(c => c.onclick = () => {
+    const tags = new Set(ann.tags || []);
+    tags.has(c.dataset.tag) ? tags.delete(c.dataset.tag) : tags.add(c.dataset.tag);
+    patchAnn({ tags: [...tags] }).then(() => openReview(POS));
+  });
+  $('#note').addEventListener('blur', e => patchAnn({ note: e.target.value }));
+  $('#genThink').onclick = () => generateThinking(r._key, $('#genForce').checked);
+  if (r._has_screenshot) {
+    const shotUrl = `/api/screenshot/${qenc(r._key)}`;
+    const shotN = shotName(obs.screenshot);
+    $('#shotThumb').onclick = () => openShotModal(shotUrl, shotN);
+    $('#shotOpen').onclick = () => openShotModal(shotUrl, shotN);
+    $('#shotRemove').onclick = () => patchAnn({ screenshot_removed: true }).then(() => openReview(POS));
+  } else if (r._screenshot_exists) {
+    $('#shotRestore').onclick = () => patchAnn({ screenshot_removed: false }).then(() => openReview(POS));
+  }
+}
+
+async function refreshCorpusStats() {
+  // Keeps the header's "kept/deleted · reviewed x/y · thinking:…" line in
+  // sync with every save — it only reassigns CORPUS and re-renders the stats
+  // line, so it never touches the filter dropdowns' current selection.
+  try {
+    CORPUS = await api('GET', '/api/corpus');
+    renderStats();
+  } catch (e) { /* non-fatal — the header just stays stale until the next save */ }
+}
+
+function openShotModal(url, name) {
+  openModal(`<h2>${esc(name || 'screenshot')}</h2><img src="${url}" alt="${esc(name || '')}">
+    <div class="row" style="justify-content:flex-end;margin-top:12px">
+      <a href="${url}" target="_blank" rel="noopener" class="ghost"
+         style="padding:5px 8px;border:1px solid var(--line);border-radius:6px;text-decoration:none;color:var(--fg)">open in new tab</a>
+      <button class="ghost" id="shotModalClose">close</button>
+    </div>`, 'wide');
+  $('#shotModalClose').onclick = closeModal;
+}
+
+async function patchAnn(patch) {
+  const res = await api('POST', '/api/records/' + qenc(CURRENT._key), patch);
+  if (!res.ok) { toast(res.error || 'save failed', true); return res; }
+  toast('saved');
+  refreshCorpusStats();
+  return res;
+}
+
+function saveEdit(elm) {
+  // Every editable field's id is `e_<dotted.path>` (see renderReview) — derive
+  // the path from the id itself rather than a data-path attribute, since
+  // nothing here ever set one.
+  const path = elm.id.replace(/^e_/, '');
+  let value = elm.value;
+  if (path === 'action.args') {
+    try { value = JSON.parse(value || '{}'); }
+    catch (e) { toast('args is not valid JSON — not saved', true); return; }
+  }
+  if (path === 'thinking.text') {
+    if (!value.trim()) { patchAnn({ thinking_override: null }); return; }
+    // generated:false — a human typed this, it is not synthesised reasoning.
+    patchAnn({ thinking_override: { text: value, generated: false, author: 'human' } });
+    return;
+  }
+  if (path === 'result.ok') return; // handled by change listener below
+  patchAnn({ edits: { [path]: value } });
+}
+document.addEventListener('change', e => {
+  if (e.target && e.target.id === 'e_result.ok') patchAnn({ edits: { 'result.ok': e.target.checked } });
+});
+
+async function generateThinking(key, force) {
+  const btn = $('#genThink'), status = $('#genStatus');
+  btn.disabled = true; status.textContent = 'asking claude…';
+  const res = await api('POST', `/api/records/${qenc(key)}/generate-thinking`, { force });
+  btn.disabled = false;
+  if (!res.ok) { status.textContent = 'failed: ' + (res.error || '?'); toast(res.error || 'generation failed', true); return; }
+  status.textContent = 'done';
+  openReview(POS);
+}
+
+// ------------------------------------------------------ per-field assist ---
+// A free-text instruction box under any editable field — "make this terser",
+// "note the coordinates were stale", "write what the model would have seen
+// here" — that shells out to the claude CLI via /api/records/<key>/assist
+// and writes the result straight into that field (still editable afterward,
+// same as a human edit).
+
+function assistRow(field) {
+  return `<div class="row" style="margin-top:8px">
+    <input type="text" id="ap_${esc(field)}" placeholder="tell claude what to write here…" style="flex:1;min-width:160px">
+    <button data-assist-field="${esc(field)}">Ask claude</button>
+    <span class="sum" data-assist-status="${esc(field)}"></span>
+  </div>`;
+}
+
+async function askAssist(field) {
+  const input = document.getElementById('ap_' + field);
+  const status = document.querySelector('[data-assist-status="' + field + '"]');
+  const btn = document.querySelector('[data-assist-field="' + field + '"]');
+  const instruction = input ? input.value.trim() : '';
+  if (!instruction) { toast('type an instruction first', true); return; }
+  btn.disabled = true;
+  if (status) status.textContent = 'asking claude…';
+  const res = await api('POST', `/api/records/${qenc(CURRENT._key)}/assist`, { field, instruction });
+  btn.disabled = false;
+  if (!res.ok) {
+    if (status) status.textContent = 'failed: ' + (res.error || '?');
+    toast(res.error || 'assist failed', true);
+    return;
+  }
+  toast('applied — edit further if it needs it, already saved');
+  openReview(POS);
+}
+
+document.addEventListener('click', e => {
+  const btn = e.target.closest('[data-assist-field]');
+  if (btn) askAssist(btn.dataset.assistField);
+});
+
+// ------------------------------------------------------------- bulk gen ---
+
+function openModal(html, cls) {
+  $('#modalRoot').innerHTML = `<div class="modal-bg" id="modalBg"><div class="modal${cls ? ' ' + cls : ''}">${html}</div></div>`;
+  $('#modalBg').addEventListener('click', e => { if (e.target.id === 'modalBg') closeModal(); });
+}
+function closeModal() { $('#modalRoot').innerHTML = ''; }
+
+function bulkModal() {
+  openModal(`<h2>Backfill missing thinking</h2>
+    <p class="sum">Runs <code>claude -p</code> once per record currently matching the filters
+    (excluding records already marked "present"), writing a synthesised &lt;thinking&gt; block
+    with <code>generated: true</code>. This can take a while and costs API usage.</p>
+    <div class="row"><label>limit&nbsp;<input id="bulkLimit" type="number" value="25" style="width:80px"></label>
+    <label>model&nbsp;<input id="bulkModel" value="sonnet" style="width:100px"></label></div>
+    <div id="bulkProgress" hidden><div class="progressbar"><div id="bulkBar" style="width:0%"></div></div>
+      <div class="sum" id="bulkText"></div></div>
+    <div class="row" style="justify-content:flex-end;margin-top:12px">
+      <button class="ghost" id="bulkCancel">close</button>
+      <button class="primary" id="bulkStart">start</button>
+    </div>`);
+  $('#bulkCancel').onclick = closeModal;
+  $('#bulkStart').onclick = startBulk;
+}
+
+async function startBulk() {
+  const limit = +$('#bulkLimit').value || null;
+  const model = $('#bulkModel').value || 'sonnet';
+  $('#bulkStart').disabled = true;
+  $('#bulkProgress').hidden = false;
+  const res = await api('POST', '/api/generate-thinking/bulk', { filter: currentFilters(), limit, model });
+  if (!res.ok) { toast(res.error || 'could not start', true); return; }
+  pollJob(res.job_id);
+}
+
+async function pollJob(id) {
+  const j = await api('GET', '/api/jobs/' + id);
+  const pct = j.total ? Math.round(100 * j.done / j.total) : 100;
+  $('#bulkBar').style.width = pct + '%';
+  $('#bulkText').textContent = `${j.done}/${j.total} done · ${j.ok} ok · ${j.failed} failed` +
+    (j.current_key ? ` · working on ${j.current_key}` : '');
+  if (!j.finished) { setTimeout(() => pollJob(id), 800); return; }
+  toast(`backfill done: ${j.ok} generated, ${j.failed} failed`);
+  await loadCorpus();
+  if (MODE === 'grid') refreshGrid(); else refreshReviewList().then(() => openReview(POS));
+}
+
+// ----------------------------------------------------------------export ---
+
+function exportModal() {
+  const matchCount = ROWS.length;
+  openModal(`<h2>Export corpus</h2>
+    <div class="row"><label class="chk"><input type="checkbox" id="expUseFilter" checked>
+      only records matching the current filters (${matchCount} of ${CORPUS.count}, incl. the search box,
+      dropdowns and the from/to window above)</label></div>
+    <div class="row"><label>format&nbsp;<select id="expFmt"><option value="steps">steps</option>
+      <option value="messages">messages</option></select></label></div>
+    <div class="row"><label>minimum reward&nbsp;<select id="expMinReward"><option value="">none</option>
+      <option value="-1">≥ -1</option><option value="0">≥ 0</option><option value="1">≥ 1</option>
+      <option value="2">= 2</option></select></label></div>
+    <div class="row"><label class="chk"><input type="checkbox" id="expKeepDeleted"> include deleted steps</label></div>
+    <div class="row"><label style="flex:1">output path (optional)<br><input id="expOut" style="width:100%" placeholder="default: alongside the input file"></label></div>
+    <div id="expResult" class="sum"></div>
+    <div class="row" style="justify-content:flex-end;margin-top:12px">
+      <button class="ghost" id="expCancel">close</button>
+      <button class="primary" id="expGo">export</button>
+    </div>`);
+  $('#expCancel').onclick = closeModal;
+  $('#expGo').onclick = doExport;
+}
+
+async function doExport() {
+  $('#expGo').disabled = true;
+  const body = { format: $('#expFmt').value, keep_deleted: $('#expKeepDeleted').checked };
+  const mr = $('#expMinReward').value; if (mr !== '') body.min_reward = +mr;
+  const out = $('#expOut').value.trim(); if (out) body.out = out;
+  if ($('#expUseFilter').checked) body.filter = currentFilters();
+  const res = await api('POST', '/api/export', body);
+  $('#expGo').disabled = false;
+  if (!res.ok) { $('#expResult').textContent = 'failed: ' + (res.error || '?'); return; }
+  const m = res.manifest;
+  $('#expResult').innerHTML = `wrote <b>${esc(m.exported_records)}</b> records ` +
+    `(of ${esc(m.source_records)} considered${m.filtered ? ', scoped to the active filters' : ''}) to<br>
+    <span class="mono" style="display:block;padding:6px;margin-top:4px">${esc(m.out)}</span>
+    dropped ${m.dropped_deleted} deleted, ${m.dropped_below_min_reward} below reward floor · ${m.edited_records} edited`;
+}
+
+// ------------------------------------------------------------ mode/tabs ---
+
+async function switchTab(mode) {
+  MODE = mode;
+  $('#tabGrid').classList.toggle('active', mode === 'grid');
+  $('#tabReview').classList.toggle('active', mode === 'review');
+  $('#gridView').hidden = mode !== 'grid';
+  $('#reviewView').hidden = mode !== 'review';
+  if (mode === 'grid') await refreshGrid();
+  else { await refreshReviewList(); await openReview(POS); }
+}
+
+$('#tabGrid').onclick = () => switchTab('grid');
+$('#tabReview').onclick = () => switchTab('review');
+$('#btnBulk').onclick = bulkModal;
+$('#btnExport').onclick = exportModal;
+$('#btnHelp').onclick = () => openModal(`<h2>Keyboard shortcuts (review mode)</h2>
+  <div class="help">
+    <div><kbd>&larr;</kbd>/<kbd>&rarr;</kbd> or <kbd>j</kbd>/<kbd>k</kbd> — prev / next record</div>
+    <div><kbd>1</kbd>…<kbd>5</kbd> — reward -2…+2</div>
+    <div><kbd>g</kbd> — generate thinking for this record</div>
+    <div><kbd>x</kbd> — toggle delete</div>
+    <div><kbd>r</kbd> — toggle reviewed</div>
+    <div><kbd>/</kbd> — focus search</div>
+  </div>
+  <div class="row" style="justify-content:flex-end;margin-top:12px"><button id="helpClose">close</button></div>`);
+document.addEventListener('click', e => { if (e.target && e.target.id === 'helpClose') closeModal(); });
+
+['#q','#f_kind','#f_thinking','#f_task','#f_session','#f_status','#f_example_type','#f_min_reward','#f_start','#f_end']
+  .forEach(sel => $(sel).addEventListener('input', () => { if (MODE === 'grid') refreshGrid(); else { refreshReviewList().then(() => openReview(0)); } }));
+$('#f_warn').addEventListener('change', () => { if (MODE === 'grid') refreshGrid(); else refreshReviewList().then(() => openReview(0)); });
+$('#f_unreviewed').addEventListener('change', () => { if (MODE === 'grid') refreshGrid(); else refreshReviewList().then(() => openReview(0)); });
+$('#f_session').addEventListener('input', renderSessionHint);
+
+document.addEventListener('keydown', e => {
+  if (MODE !== 'review' || !CURRENT) return;
+  const tag = (document.activeElement && document.activeElement.tagName || '').toLowerCase();
+  if (tag === 'textarea' || tag === 'input' || tag === 'select') {
+    if (e.key === '/') return;
+    return;
+  }
+  if (e.key === '/') { e.preventDefault(); $('#q').focus(); return; }
+  if (e.key === 'ArrowRight' || e.key === 'j') openReview(POS + 1);
+  else if (e.key === 'ArrowLeft' || e.key === 'k') openReview(POS - 1);
+  else if (['1','2','3','4','5'].includes(e.key)) patchAnn({ reward: +e.key - 3 }).then(() => openReview(POS));
+  else if (e.key === 'g') generateThinking(CURRENT._key, false);
+  else if (e.key === 'x') $('#delToggle').click();
+  else if (e.key === 'r') $('#reviewedChk').click();
+});
+
+(async function init() {
+  await loadCorpus();
+  await refreshGrid();
+})();
+</script>
+</body>
+</html>

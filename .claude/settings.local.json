@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(python -m jobagent prefs get)",
+      "PowerShell(python -m jobagent answers list)",
+      "PowerShell(python -m jobagent answers missing)",
+      "PowerShell(python -m jobagent report daily)",
+      "PowerShell(python -m jobagent outreach pending)",
+      "PowerShell(python -m jobagent report followups)",
+      "PowerShell(python -m jobagent run end --notes \"completed inbox and followup check\")",
+      "PowerShell(python -m jobagent run start)",
+      "Bash(python *)",
+      "Read(//c/Users/agraw/AppData/Local/Temp/claude/**)",
+      "Bash(python3 -c ' *)",
+      "Bash(python -m jobagent answers resolve *)",
+      "Bash(python -m jobagent job applied *)",
+      "Bash(dir C:\\\\local_data\\\\linkedinAgent *)",
+      "Bash(cd *)",
+      "Bash(cp -r plugin/skills/* .claude/skills/)",
+      "Bash(cp plugin/agents/linkedin-agent.md .claude/agents/)"
+    ]
+  },
+  "enabledMcpjsonServers": [
+    "browsermcp"
+  ]
+}
