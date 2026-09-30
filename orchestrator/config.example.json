@@ -1,0 +1,11 @@
+{
+  "base_url": "http://localhost:8000/v1",
+  "api_key": "EMPTY",
+  "model": "meta-llama/Llama-3.1-8B-Instruct",
+  "temperature": 0.2,
+  "max_tokens": 1024,
+  "max_steps": 25,
+  "max_consecutive_errors": 3,
+  "request_timeout": 120,
+  "shell_timeout": 300
+}

@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>LinkedIn Orchestrator</title>
+<style>
+  :root {
+    --bg: #0f1216; --panel: #171b21; --border: #2a2f37; --text: #e6e8eb;
+    --muted: #8b94a3; --accent: #4f8cff; --ok: #3fbf6f; --bad: #e05a5a;
+    --warn: #d9a441;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.45 -apple-system, Segoe UI, Roboto, sans-serif;
+    display: flex; height: 100vh; overflow: hidden;
+  }
+  aside {
+    width: 340px; min-width: 280px; border-right: 1px solid var(--border);
+    display: flex; flex-direction: column; padding: 14px; gap: 14px; overflow-y: auto;
+  }
+  main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+  h1 { font-size: 15px; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+  textarea {
+    width: 100%; min-height: 80px; background: var(--panel); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px; padding: 8px; font: inherit; resize: vertical;
+  }
+  select, input[type=text], input[type=password] {
+    width: 100%; background: var(--panel); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; font: inherit;
+  }
+  details.adv { margin-top: 8px; }
+  details.adv summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+  details.adv .fields { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+  details.adv .fields label { font-size: 11px; color: var(--muted); }
+  label.check { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+  button {
+    background: var(--accent); color: white; border: none; border-radius: 6px;
+    padding: 8px 12px; font: inherit; cursor: pointer;
+  }
+  button:disabled { opacity: 0.5; cursor: default; }
+  button.secondary { background: var(--panel); border: 1px solid var(--border); color: var(--text); }
+  #sessions { display: flex; flex-direction: column; gap: 6px; overflow-y: auto; flex: 1; }
+  .session-row {
+    border: 1px solid var(--border); border-radius: 6px; padding: 8px; cursor: pointer; background: var(--panel);
+  }
+  .session-row:hover { border-color: var(--accent); }
+  .session-row.active { border-color: var(--accent); background: #1c2330; }
+  .session-row .task { font-size: 12px; margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .session-row .meta { font-size: 11px; color: var(--muted); display: flex; justify-content: space-between; align-items: center; gap: 6px; }
+  .del-btn {
+    background: transparent; color: var(--muted); border: 1px solid var(--border);
+    border-radius: 4px; padding: 1px 6px; font-size: 10px; line-height: 1.6;
+  }
+  .del-btn:hover { background: #3a2222; border-color: var(--bad); color: var(--bad); }
+  .badge { padding: 1px 6px; border-radius: 10px; font-size: 10px; text-transform: uppercase; }
+  .badge.running { background: #2a3f5f; color: #8fc0ff; }
+  .badge.completed { background: #1e3a2a; color: var(--ok); }
+  .badge.failed, .badge.aborted { background: #3a2222; color: var(--bad); }
+  .badge.max_steps_reached { background: #3a3222; color: var(--warn); }
+  .badge.waiting_for_user { background: #3a3222; color: var(--warn); }
+  .badge.stopped { background: #2a2e3a; color: var(--muted); }
+  .stop-btn {
+    background: transparent; color: var(--muted); border: 1px solid var(--border);
+    border-radius: 4px; padding: 1px 6px; font-size: 10px; line-height: 1.6;
+  }
+  .stop-btn:hover { background: #3a2222; border-color: var(--bad); color: var(--bad); }
+  #answerBox, #retryBox { padding: 12px 18px; border-top: 1px solid var(--border); display: flex; align-items: center; gap: 8px; }
+  #answerBox #answerInput, #answerBox #answerApiKey, #retryBox #retryApiKey {
+    background: var(--panel); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 8px; font: inherit;
+  }
+  #answerBox #answerInput { flex: 1; }
+  #retryBox span { color: var(--bad); overflow: hidden; text-overflow: ellipsis; }
+  #retryBox span.stopped-note { color: var(--muted); }
+  header.top {
+    padding: 12px 18px; border-bottom: 1px solid var(--border); display: flex;
+    justify-content: space-between; align-items: center;
+  }
+  #transcript { flex: 1; overflow-y: auto; padding: 18px; display: flex; flex-direction: column; gap: 10px; }
+  /* flex-shrink: 0 -- #transcript is a flex-direction:column container
+     with a scrollable ancestor; without this, a session with many
+     messages can let the browser shrink bubbles toward zero height to
+     fit instead of just scrolling past them. Same fix as annotate_page's
+     .step-card, cheap insurance here even though .msg itself doesn't set
+     its own `overflow`, which is what makes the collapse most likely. */
+  .msg { border-radius: 8px; padding: 10px 12px; max-width: 80%; white-space: pre-wrap; word-break: break-word; font-size: 13px; flex-shrink: 0; }
+  .msg .role { font-size: 10px; text-transform: uppercase; color: var(--muted); margin-bottom: 4px; letter-spacing: 0.04em; }
+  .msg.system { background: #1a1d23; border: 1px dashed var(--border); color: var(--muted); max-width: 100%; font-size: 12px; }
+  .msg.user { background: #1c2330; align-self: flex-end; }
+  .msg.assistant { background: var(--panel); border: 1px solid var(--border); align-self: flex-start; }
+  .msg.tool { background: #14201a; border: 1px solid #234; align-self: flex-start; font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+  #empty { color: var(--muted); padding: 24px; }
+  .footer-bar { padding: 8px 18px; border-top: 1px solid var(--border); font-size: 12px; color: var(--muted); display: flex; justify-content: space-between; }
+  .review-badge { padding: 1px 6px; border-radius: 10px; font-size: 10px; white-space: nowrap; }
+  .review-badge.unreviewed { color: var(--muted); border: 1px solid var(--border); }
+  .review-badge.rb-neg2, .review-badge.rb-neg1 { background: #3a2222; color: var(--bad); }
+  .review-badge.rb-0 { background: #2a2f37; color: var(--muted); }
+  .review-badge.rb-pos1, .review-badge.rb-pos2 { background: #1e3a2a; color: var(--ok); }
+  /* Session review, per-step scoring, and export/import all live on
+     /annotate now -- see annotate_page.html. This page only shows the
+     review-status badge (above) while browsing sessions. */
+</style>
+</head>
+<body>
+  <aside>
+    <div>
+      <h1>New run</h1>
+      <div class="sub">Runs the orchestrator against your local model.</div>
+      <textarea id="task" placeholder="e.g. Run today's LinkedIn daily cycle and summarize what happened."></textarea>
+      <label class="check" style="margin-top:8px">
+        <input type="checkbox" id="finetune"> collect this session as fine-tuning data
+      </label>
+      <label class="check" style="margin-top:4px">
+        <input type="checkbox" id="vision"> enable screenshots (needs a vision-capable model)
+      </label>
+      <label class="check" style="margin-top:4px">
+        <input type="checkbox" id="interactive"> allow the agent to ask questions
+      </label>
+      <label class="check" style="margin-top:4px">
+        <input type="checkbox" id="browse"> let the agent drive the browser (jobagent browse) directly
+      </label>
+      <details class="adv">
+        <summary>Model (provider, model, endpoint)</summary>
+        <div class="fields">
+          <label for="provider">Provider</label>
+          <select id="provider">
+            <option value="openai">openai — OpenAI-compatible server</option>
+            <option value="anthropic">anthropic — Claude API (needs a key)</option>
+            <option value="claude-cli">claude-cli — Claude Code, no API key</option>
+          </select>
+          <label for="model">Model</label>
+          <input type="text" id="model" placeholder="e.g. local-model, claude-sonnet-5, sonnet">
+          <label for="baseUrl">Base URL (ignored for claude-cli)</label>
+          <input type="text" id="baseUrl" placeholder="http://localhost:8000/v1">
+          <label for="apiKey">API key (blank = server default / $ANTHROPIC_API_KEY)</label>
+          <input type="password" id="apiKey" placeholder="only if overriding">
+          <label for="effort">Reasoning effort (claude-cli only; blank = inherit ambient config)</label>
+          <select id="effort">
+            <option value="">(unset)</option>
+            <option value="low">low</option>
+            <option value="medium">medium</option>
+            <option value="high">high</option>
+            <option value="xhigh">xhigh</option>
+            <option value="max">max</option>
+          </select>
+        </div>
+      </details>
+      <button id="runBtn" style="margin-top:8px; width:100%">Run</button>
+    </div>
+    <div style="display:flex; flex-direction:column; flex:1; min-height:0;">
+      <h1>Sessions</h1>
+      <div id="sessions"></div>
+    </div>
+  </aside>
+  <main>
+    <header class="top">
+      <div id="sessionTitle">No session selected</div>
+      <div style="display:flex; align-items:center; gap:12px;">
+        <a href="/annotate" style="color:var(--accent); font-size:12px; text-decoration:none;">Annotate, review &amp; export &rarr;</a>
+        <button class="secondary" id="stopBtn" style="display:none"
+                title="Stop this session at its next step boundary (won't interrupt a model call or tool already in flight)">Stop</button>
+        <button class="secondary" id="refreshBtn">Refresh</button>
+      </div>
+    </header>
+    <div id="transcript"><div id="empty">Start a run, or pick a session on the left.</div></div>
+    <div class="footer-bar" id="footerBar"></div>
+  </main>
+
+<script>
+let activeSession = null;
+let pollTimer = null;
+let cfg = null;
+
+async function jget(url) { const r = await fetch(url); return r.json(); }
+async function jpost(url, body) {
+  const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
+  return r.json();
+}
+async function jdelete(url) {
+  const r = await fetch(url, { method: "DELETE" });
+  return r.json();
+}
+
+function escapeHtml(s) {
+  return (s || "").replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+}
+
+const REWARD_LABELS = { "-2": "unusable", "-1": "bad", "0": "neutral", "1": "good", "2": "exemplary" };
+function rewardClass(reward) {
+  return reward < 0 ? `rb-neg${-reward}` : reward > 0 ? `rb-pos${reward}` : "rb-0";
+}
+function reviewBadgeHtml(s) {
+  if (!s.reviewed) return `<span class="review-badge unreviewed">unreviewed</span>`;
+  return `<span class="review-badge ${rewardClass(s.reward)}" title="${escapeHtml(s.review_note || "")}">${s.reward} ${REWARD_LABELS[s.reward]}</span>`;
+}
+
+function renderSessions(sessions) {
+  const el = document.getElementById("sessions");
+  el.innerHTML = "";
+  for (const s of sessions) {
+    const row = document.createElement("div");
+    row.className = "session-row" + (s.id === activeSession ? " active" : "");
+    row.innerHTML = `
+      <div class="task">${escapeHtml(s.task)}</div>
+      <div class="meta">
+        <span class="badge ${s.status}">${s.status}</span>
+        ${reviewBadgeHtml(s)}
+        <span>${s.step_count} steps · ${s.started_at.replace("T", " ").slice(0, 19)}</span>
+        ${s.status === "running" ? '<button class="stop-btn" title="Stop this session at its next step boundary">Stop</button>' : ""}
+        <button class="del-btn" title="Delete this session">Delete</button>
+      </div>`;
+    row.onclick = () => selectSession(s.id);
+    row.querySelector(".del-btn").onclick = (e) => { e.stopPropagation(); deleteSession(s.id); };
+    const stopBtn = row.querySelector(".stop-btn");
+    if (stopBtn) stopBtn.onclick = (e) => { e.stopPropagation(); stopSession(s.id); };
+    el.appendChild(row);
+  }
+}
+
+async function deleteSession(id) {
+  if (!confirm("Delete this session and its messages? This can't be undone.")) return;
+  const alsoScreenshots = confirm(
+    "Also delete its screenshot files?\n\n" +
+    "They live in jobagent's own shared trace store, not just this session -- the same file " +
+    "could be referenced by jobagent's own harvest corpus independently. Cancel to leave them in place."
+  );
+  const res = await jdelete(`/api/sessions/${id}?delete_screenshots=${alsoScreenshots ? "1" : "0"}`);
+  if (res.error) { alert(res.error); return; }
+  if (activeSession === id) {
+    activeSession = null;
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    document.getElementById("sessionTitle").textContent = "No session selected";
+    document.getElementById("transcript").innerHTML = '<div id="empty">Start a run, or pick a session on the left.</div>';
+    document.getElementById("footerBar").textContent = "";
+    const answerBox = document.getElementById("answerBox");
+    if (answerBox) answerBox.remove();
+  }
+  refreshSessions();
+}
+
+async function stopSession(id) {
+  const res = await jpost(`/api/sessions/${id}/stop`, {});
+  if (res.error) { alert(res.error); return; }
+  if (activeSession === id) loadActive();
+  refreshSessions();
+}
+
+async function refreshSessions() {
+  const data = await jget("/api/sessions");
+  renderSessions(data.sessions || []);
+}
+
+function roleClass(role) {
+  if (role === "system" || role === "user" || role === "assistant" || role === "tool") return role;
+  return "assistant";
+}
+
+function renderTranscript(session, messages) {
+  document.getElementById("sessionTitle").textContent =
+    `${session.id.slice(0, 8)}  ·  ${session.status}  ·  ${session.model}`;
+  const el = document.getElementById("transcript");
+  el.innerHTML = "";
+  for (const m of messages) {
+    const div = document.createElement("div");
+    div.className = "msg " + roleClass(m.role);
+    const label = m.tool_name ? `${m.role} (${m.tool_name})` : m.role;
+    let html = `<div class="role">${escapeHtml(label)}</div>${escapeHtml(m.content)}`;
+    if (m.image_path) {
+      const src = `/api/sessions/${session.id}/messages/${m.seq}/image`;
+      html += `<div style="margin-top:8px"><img src="${src}" style="max-width:100%; border-radius:6px; border:1px solid var(--border)"></div>`;
+    }
+    div.innerHTML = html;
+    el.appendChild(div);
+  }
+  el.scrollTop = el.scrollHeight;
+  const footer = document.getElementById("footerBar");
+  let extra = "";
+  if (session.summary) extra = "summary: " + session.summary;
+  if (session.error) extra = "error: " + session.error;
+  footer.textContent = extra;
+  document.getElementById("stopBtn").style.display = session.status === "running" ? "" : "none";
+  renderAnswerBox(session);
+  renderRetryBox(session);
+}
+
+function renderRetryBox(session) {
+  const existing = document.getElementById("retryBox");
+  if (existing) existing.remove();
+  if (!["failed", "aborted", "stopped"].includes(session.status)) return;
+  const isStopped = session.status === "stopped";
+  const box = document.createElement("div");
+  box.id = "retryBox";
+  box.innerHTML = `
+    <span class="${isStopped ? "stopped-note" : ""}" style="white-space:nowrap">${isStopped ? "Session stopped" : `Session ${session.status}${session.error ? ": " + escapeHtml(session.error) : ""}`}</span>
+    <input type="password" id="retryApiKey" style="width:160px"
+           placeholder="API key (if needed)"
+           title="api_key is never stored on the session, so resuming against a remote provider needs it again here. Leave blank if this session's provider doesn't need one.">
+    <label class="check" style="white-space:nowrap"
+           title="Replay any earlier screenshot as text only. Use this if the failure was something like 'messages contain images, but <model> does not support image inputs'.">
+      <input type="checkbox" id="retryNoSendImages">
+      resume without images
+    </label>
+    <button id="retryBtn">${isStopped ? "Resume" : "Retry"}</button>`;
+  document.querySelector("main").insertBefore(box, document.getElementById("footerBar"));
+  document.getElementById("retryBtn").onclick = async () => {
+    const btn = document.getElementById("retryBtn");
+    btn.disabled = true;
+    try {
+      const noImages = document.getElementById("retryNoSendImages").checked;
+      const apiKey = document.getElementById("retryApiKey").value.trim();
+      const body = {};
+      if (noImages) body.send_images = false;
+      if (apiKey) body.api_key = apiKey;
+      const res = await jpost(`/api/sessions/${session.id}/retry`, body);
+      if (res.error) { alert(res.error); return; }
+      selectSession(session.id);
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  };
+}
+
+function renderAnswerBox(session) {
+  const existing = document.getElementById("answerBox");
+  if (existing) existing.remove();
+  if (session.status !== "waiting_for_user") return;
+  const box = document.createElement("div");
+  box.id = "answerBox";
+  box.innerHTML = `
+    <input id="answerInput" placeholder="The agent is waiting for your answer…">
+    <input type="password" id="answerApiKey" style="width:160px"
+           placeholder="API key (if needed)"
+           title="api_key is never stored on the session, so a paused session on a remote provider needs it again here. Leave blank if this session's provider doesn't need one (a local server, or you're relying on $ANTHROPIC_API_KEY).">
+    <label class="check" style="white-space:nowrap"
+           title="Replay any earlier screenshot as text only. Use this if resuming errors with something like 'messages contain images, but &lt;model&gt; does not support image inputs'.">
+      <input type="checkbox" id="noSendImages">
+      resume without images
+    </label>
+    <button id="answerBtn">Send</button>`;
+  document.querySelector("main").insertBefore(box, document.getElementById("footerBar"));
+  const send = async () => {
+    const val = document.getElementById("answerInput").value.trim();
+    if (!val) return;
+    document.getElementById("answerBtn").disabled = true;
+    try {
+      const noImages = document.getElementById("noSendImages").checked;
+      const apiKey = document.getElementById("answerApiKey").value.trim();
+      const body = { answer: val };
+      if (noImages) body.send_images = false;
+      if (apiKey) body.api_key = apiKey;
+      await jpost(`/api/sessions/${session.id}/answer`, body);
+      selectSession(session.id);
+    } finally {
+      const btn = document.getElementById("answerBtn");
+      if (btn) btn.disabled = false;
+    }
+  };
+  document.getElementById("answerBtn").onclick = send;
+  document.getElementById("answerInput").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") send();
+  });
+  document.getElementById("answerInput").focus();
+}
+
+async function selectSession(id) {
+  activeSession = id;
+  await loadActive();
+  refreshSessions();
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(async () => {
+    const data = await loadActive();
+    if (data && data.session.status !== "running") {
+      clearInterval(pollTimer);
+      pollTimer = null;
+      refreshSessions();
+    }
+  }, 1500);
+}
+
+async function loadActive() {
+  if (!activeSession) return null;
+  const data = await jget(`/api/sessions/${activeSession}`);
+  if (data.error) return null;
+  renderTranscript(data.session, data.messages);
+  return data;
+}
+
+document.getElementById("runBtn").onclick = async () => {
+  const task = document.getElementById("task").value.trim();
+  if (!task) return;
+  const finetune = document.getElementById("finetune").checked;
+  const vision = document.getElementById("vision").checked;
+  const interactive = document.getElementById("interactive").checked;
+  const browse = document.getElementById("browse").checked;
+  const provider = document.getElementById("provider").value;
+  const model = document.getElementById("model").value.trim();
+  const baseUrl = document.getElementById("baseUrl").value.trim();
+  const apiKey = document.getElementById("apiKey").value.trim();
+  const effort = document.getElementById("effort").value;
+  const btn = document.getElementById("runBtn");
+  btn.disabled = true;
+  try {
+    const body = { task, finetune, vision, interactive, browse, provider, model, base_url: baseUrl };
+    if (apiKey) body.api_key = apiKey;
+    if (effort) body.effort = effort;
+    const res = await jpost("/api/run", body);
+    if (res.session_id) {
+      await refreshSessions();
+      selectSession(res.session_id);
+    }
+  } finally {
+    btn.disabled = false;
+  }
+};
+
+document.getElementById("refreshBtn").onclick = () => { refreshSessions(); loadActive(); };
+document.getElementById("stopBtn").onclick = () => { if (activeSession) stopSession(activeSession); };
+
+(async () => {
+  cfg = await jget("/api/config");
+  document.getElementById("vision").checked = !!cfg.vision;
+  document.getElementById("interactive").checked = !!cfg.interactive;
+  document.getElementById("browse").checked = !!cfg.browse;
+  document.getElementById("provider").value = cfg.provider || "openai";
+  document.getElementById("model").value = cfg.model || "";
+  document.getElementById("baseUrl").value = cfg.base_url || "";
+  document.getElementById("effort").value = cfg.effort || "";
+  // api_key is never prefilled -- /api/config only ever returns it masked
+  // (see Config.masked()), and sending that masked string back as a real
+  // key would break auth. Blank means "use the server's own default".
+})();
+
+refreshSessions();
+setInterval(refreshSessions, 5000);
+</script>
+</body>
+</html>

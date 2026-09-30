@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Orchestrator Annotation</title>
+<style>
+  :root {
+    --bg: #0f1216; --panel: #171b21; --border: #2a2f37; --text: #e6e8eb;
+    --muted: #8b94a3; --accent: #4f8cff; --ok: #3fbf6f; --bad: #e05a5a;
+    --warn: #d9a441;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.45 -apple-system, Segoe UI, Roboto, sans-serif;
+    display: flex; height: 100vh; overflow: hidden;
+  }
+  aside {
+    width: 340px; min-width: 280px; border-right: 1px solid var(--border);
+    display: flex; flex-direction: column; padding: 14px; gap: 14px; overflow-y: auto;
+  }
+  main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+  h1 { font-size: 15px; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+  textarea {
+    width: 100%; min-height: 44px; background: var(--panel); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px; padding: 8px; font: inherit; resize: vertical;
+  }
+  select, input[type=text], input[type=password] {
+    width: 100%; background: var(--panel); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; font: inherit;
+  }
+  details.adv { margin-top: 8px; }
+  details.adv summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+  details.adv .fields { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+  details.adv .fields label { font-size: 11px; color: var(--muted); }
+  label.check { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+  a.navlink { color: var(--accent); font-size: 12px; text-decoration: none; }
+  a.navlink:hover { text-decoration: underline; }
+  button {
+    background: var(--accent); color: white; border: none; border-radius: 6px;
+    padding: 8px 12px; font: inherit; cursor: pointer;
+  }
+  button:disabled { opacity: 0.5; cursor: default; }
+  button.secondary { background: var(--panel); border: 1px solid var(--border); color: var(--text); }
+  #sessions { display: flex; flex-direction: column; gap: 6px; overflow-y: auto; flex: 1; }
+  .session-row {
+    border: 1px solid var(--border); border-radius: 6px; padding: 8px; cursor: pointer; background: var(--panel);
+  }
+  .session-row:hover { border-color: var(--accent); }
+  .session-row.active { border-color: var(--accent); background: #1c2330; }
+  .session-row .task { font-size: 12px; margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .session-row .meta { font-size: 11px; color: var(--muted); display: flex; justify-content: space-between; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .badge { padding: 1px 6px; border-radius: 10px; font-size: 10px; text-transform: uppercase; }
+  .badge.running { background: #2a3f5f; color: #8fc0ff; }
+  .badge.completed { background: #1e3a2a; color: var(--ok); }
+  .badge.failed, .badge.aborted { background: #3a2222; color: var(--bad); }
+  .badge.max_steps_reached { background: #3a3222; color: var(--warn); }
+  .badge.waiting_for_user { background: #3a3222; color: var(--warn); }
+  .review-badge { padding: 1px 6px; border-radius: 10px; font-size: 10px; white-space: nowrap; }
+  .review-badge.unreviewed { color: var(--muted); border: 1px solid var(--border); }
+  .review-badge.rb-neg2, .review-badge.rb-neg1 { background: #3a2222; color: var(--bad); }
+  .review-badge.rb-0 { background: #2a2f37; color: var(--muted); }
+  .review-badge.rb-pos1, .review-badge.rb-pos2 { background: #1e3a2a; color: var(--ok); }
+  header.top {
+    padding: 12px 18px; border-bottom: 1px solid var(--border); display: flex;
+    justify-content: space-between; align-items: center; gap: 12px;
+  }
+  header.top .sessionMeta { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  #sessionReviewBar {
+    padding: 8px 18px; border-bottom: 1px solid var(--border); display: flex;
+    align-items: center; gap: 8px; flex-wrap: wrap; background: var(--panel);
+  }
+  #sessionReviewBar .rewardRow { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  #sessionReviewBar > span.label { font-size: 11px; color: var(--muted); }
+  .reward-btn {
+    background: transparent; border: 1px solid var(--border); color: var(--text);
+    border-radius: 6px; padding: 3px 9px; font-size: 11px;
+  }
+  .reward-btn.selected { border-color: var(--accent); background: #1c2330; font-weight: 600; }
+  .reward-btn[data-reward="-2"].selected, .reward-btn[data-reward="-1"].selected { border-color: var(--bad); color: var(--bad); }
+  .reward-btn[data-reward="1"].selected, .reward-btn[data-reward="2"].selected { border-color: var(--ok); color: var(--ok); }
+  #steps { flex: 1; overflow-y: auto; padding: 18px; display: flex; flex-direction: column; gap: 12px; }
+  #empty { color: var(--muted); padding: 24px; }
+  /* flex-shrink: 0 matters here, not just cosmetics -- #steps is a
+     flex-direction:column container with overflow-y:auto, and a
+     descendant with its own `overflow` other than `visible` (this card
+     sets `overflow: hidden`) gets an automatic `min-height: 0` per the
+     flexbox spec instead of `min-height: auto`. Without flex-shrink:0, a
+     session with many steps (100+) lets the browser shrink each card
+     toward zero height to fit instead of just scrolling past their
+     natural size -- collapsing every card into a near-invisible sliver
+     instead of showing its content. */
+  .step-card { border: 1px solid var(--border); border-radius: 8px; background: var(--panel); overflow: hidden; flex-shrink: 0; }
+  .step-card.step-reviewed { border-color: var(--accent); }
+  .step-head {
+    display: flex; justify-content: space-between; align-items: center; gap: 8px;
+    padding: 6px 12px; background: #1a1d23; font-size: 11px; color: var(--muted);
+  }
+  .step-head .role-tag { text-transform: uppercase; letter-spacing: 0.04em; }
+  .step-body { padding: 10px 12px; white-space: pre-wrap; word-break: break-word; font-size: 13px; max-height: 340px; overflow-y: auto; }
+  .step-body.system { color: var(--muted); font-size: 12px; }
+  .step-body.tool { font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+  .step-footer {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    padding: 8px 12px; border-top: 1px dashed var(--border);
+  }
+  .step-footer textarea { min-height: 32px; font-size: 12px; flex: 1; min-width: 160px; }
+  .step-footer .saved-note { font-size: 10px; color: var(--muted); }
+  #exportPanel .fields, #importPanel .fields { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+  #exportPanel .fields label, #importPanel .fields label { font-size: 11px; color: var(--muted); }
+  #exportResult, #importResult { font-size: 11px; color: var(--muted); margin-top: 8px; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+  <aside>
+    <div>
+      <h1>Annotation</h1>
+      <div class="sub">Validate each step, give it a reward, review the whole session, export.</div>
+      <a class="navlink" href="/">&larr; back to run/session view</a>
+    </div>
+    <div style="display:flex; flex-direction:column; flex:1; min-height:0;">
+      <h1>Sessions</h1>
+      <div id="sessions"></div>
+    </div>
+    <details class="adv" id="exportPanel">
+      <summary>Export for fine-tuning</summary>
+      <div class="fields">
+        <label class="check"><input type="checkbox" id="expRequireReview"> only reviewed sessions</label>
+        <label for="expMinReward">Minimum reward (blank = no filter)</label>
+        <select id="expMinReward">
+          <option value="">(no filter)</option>
+          <option value="-2">-2 or better (drop nothing reviewed)</option>
+          <option value="-1">-1 or better</option>
+          <option value="0">0 or better</option>
+          <option value="1">1 or better (good/exemplary)</option>
+          <option value="2">2 only (exemplary)</option>
+        </select>
+        <label class="check"><input type="checkbox" id="expAll"> include every session, not just --finetune-flagged</label>
+        <label class="check"><input type="checkbox" id="expAnyStatus"> include any status, not just completed</label>
+        <label class="check"><input type="checkbox" id="expStripMetadata"> strip metadata (bare messages only)</label>
+        <label for="expValFrac">Validation split fraction</label>
+        <input type="text" id="expValFrac" placeholder="0 (single file)" value="0">
+        <label for="expOut">Output path</label>
+        <input type="text" id="expOut" placeholder="orchestrator/data/finetune/export.jsonl">
+        <button id="exportBtn">Export</button>
+        <div id="exportResult"></div>
+      </div>
+    </details>
+    <details class="adv" id="importPanel">
+      <summary>Import external session data</summary>
+      <div class="fields">
+        <div class="sub" style="margin:0">
+          Load an orchestrator-sft/1 export (this machine's own, or someone
+          else's) back into sessions, step reviews included if present.
+        </div>
+        <input type="file" id="importFile" accept=".jsonl,.json,.txt">
+        <label class="check"><input type="checkbox" id="importOverwrite"> overwrite existing sessions with the same id</label>
+        <label class="check"><input type="checkbox" id="importFinetuneFlag" checked> flag imported sessions for export</label>
+        <button id="importBtn">Import</button>
+        <div id="importResult"></div>
+      </div>
+    </details>
+  </aside>
+  <main>
+    <header class="top">
+      <div id="sessionTitle">No session selected</div>
+      <div class="sessionMeta">
+        <span class="saved-note" id="saveAllStatus"></span>
+        <button class="secondary" id="saveAllBtn"
+                title="Saves every step below that has a reward picked, whether or not you clicked its own Save yet -- use this to save partial progress across a long session in one go.">
+          Save all steps
+        </button>
+        <button class="secondary" id="refreshBtn">Refresh</button>
+      </div>
+    </header>
+    <div id="sessionReviewBar" style="display:none"></div>
+    <div id="steps"><div id="empty">Pick a session on the left to start annotating it.</div></div>
+  </main>
+
+<script>
+let activeSession = null;
+let pollTimer = null;
+
+async function jget(url) { const r = await fetch(url); return r.json(); }
+async function jpost(url, body) {
+  const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
+  return r.json();
+}
+
+function escapeHtml(s) {
+  return (s || "").replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+}
+
+const REWARD_LABELS = { "-2": "unusable", "-1": "bad", "0": "neutral", "1": "good", "2": "exemplary" };
+function rewardClass(reward) {
+  return reward < 0 ? `rb-neg${-reward}` : reward > 0 ? `rb-pos${reward}` : "rb-0";
+}
+function reviewBadgeHtml(s) {
+  if (!s.reviewed) return `<span class="review-badge unreviewed">unreviewed</span>`;
+  return `<span class="review-badge ${rewardClass(s.reward)}" title="${escapeHtml(s.review_note || "")}">${s.reward} ${REWARD_LABELS[s.reward]}</span>`;
+}
+
+function renderSessions(sessions) {
+  const el = document.getElementById("sessions");
+  el.innerHTML = "";
+  for (const s of sessions) {
+    const row = document.createElement("div");
+    row.className = "session-row" + (s.id === activeSession ? " active" : "");
+    row.innerHTML = `
+      <div class="task">${escapeHtml(s.task)}</div>
+      <div class="meta">
+        <span class="badge ${s.status}">${s.status}</span>
+        ${reviewBadgeHtml(s)}
+        <span>${s.step_count} steps</span>
+      </div>`;
+    row.onclick = () => selectSession(s.id);
+    el.appendChild(row);
+  }
+}
+
+async function refreshSessions() {
+  const data = await jget("/api/sessions");
+  renderSessions(data.sessions || []);
+}
+
+function roleClass(role) {
+  if (role === "system" || role === "user" || role === "assistant" || role === "tool") return role;
+  return "assistant";
+}
+
+function renderSteps(session, messages) {
+  document.getElementById("sessionTitle").textContent =
+    `${session.id.slice(0, 8)}  ·  ${session.status}  ·  ${session.model}`;
+  const el = document.getElementById("steps");
+  el.innerHTML = "";
+  for (const m of messages) {
+    el.appendChild(renderStepCard(session, m));
+  }
+  renderSessionReviewBar(session);
+}
+
+async function saveStepReward(session, card) {
+  // Shared by the per-card Save button and "Save all steps" -- reads
+  // whatever's currently on the card (a reward selection that may not
+  // have been clicked Save on yet, plus the note text as typed) rather
+  // than needing its own separate state.
+  const rewardStr = card.dataset.selectedReward;
+  if (rewardStr === undefined || rewardStr === "") return { skipped: true };
+  const reward = parseInt(rewardStr, 10);
+  const note = card.querySelector(".step-footer textarea").value;
+  const res = await jpost(`/api/sessions/${session.id}/messages/${card.dataset.seq}/review`, { reward, note });
+  if (res.error) return { error: res.error };
+  card.classList.add("step-reviewed");
+  const badge = document.getElementById(`stepBadge-${card.dataset.seq}`);
+  if (badge) badge.innerHTML = `<span class="review-badge ${rewardClass(reward)}">${reward} ${REWARD_LABELS[reward]}</span>`;
+  const savedNote = card.querySelector(".saved-note");
+  if (savedNote) savedNote.textContent = "saved";
+  return { ok: true };
+}
+
+function renderStepCard(session, m) {
+  // Only an assistant turn is an actual decision point -- a system/user/
+  // tool row is context the model was given, not something it decided,
+  // so there's nothing to score (see db.set_message_review, which
+  // rejects it server-side too). Those rows render read-only, no footer.
+  const scorable = m.role === "assistant";
+  const card = document.createElement("div");
+  card.className = "step-card" + (scorable ? " scorable" : "") +
+    (scorable && m.reward !== null && m.reward !== undefined ? " step-reviewed" : "");
+  if (scorable) {
+    card.dataset.seq = m.seq;
+    card.dataset.selectedReward = (m.reward !== null && m.reward !== undefined) ? String(m.reward) : "";
+  }
+  const roleLabel = m.tool_name ? `${m.role} (${m.tool_name})` : m.role;
+  let bodyHtml = escapeHtml(m.content);
+  if (m.image_path) {
+    const src = `/api/sessions/${session.id}/messages/${m.seq}/image`;
+    bodyHtml += `<div style="margin-top:8px"><img src="${src}" style="max-width:100%; border-radius:6px; border:1px solid var(--border)"></div>`;
+  }
+  const badgeHtml = scorable
+    ? (m.reward !== null && m.reward !== undefined
+        ? `<span class="review-badge ${rewardClass(m.reward)}">${m.reward} ${REWARD_LABELS[m.reward]}</span>`
+        : '<span class="review-badge unreviewed">unreviewed</span>')
+    : '<span class="review-badge unreviewed" style="opacity:.6">context, not scored</span>';
+  card.innerHTML = `
+    <div class="step-head">
+      <span class="role-tag">step ${m.seq} &middot; ${escapeHtml(roleLabel)}</span>
+      <span id="stepBadge-${m.seq}">${badgeHtml}</span>
+    </div>
+    <div class="step-body ${roleClass(m.role)}">${bodyHtml}</div>
+    ${scorable ? `
+    <div class="step-footer">
+      ${[-2, -1, 0, 1, 2].map(r => `<button class="reward-btn${m.reward === r ? " selected" : ""}" data-reward="${r}">${r}</button>`).join("")}
+      <textarea placeholder="note (optional)">${escapeHtml(m.review_note || "")}</textarea>
+      <button class="secondary saveStepBtn">Save</button>
+      <span class="saved-note"></span>
+    </div>` : ""}`;
+
+  if (!scorable) return card;
+
+  card.querySelectorAll(".reward-btn").forEach(btn => {
+    btn.onclick = () => {
+      card.dataset.selectedReward = btn.dataset.reward;
+      card.querySelectorAll(".reward-btn").forEach(b => b.classList.toggle("selected", b === btn));
+    };
+  });
+  card.querySelector(".saveStepBtn").onclick = async () => {
+    if (card.dataset.selectedReward === "") { alert("Pick a reward first."); return; }
+    const res = await saveStepReward(session, card);
+    if (res.error) card.querySelector(".saved-note").textContent = "error: " + res.error;
+  };
+  return card;
+}
+
+function renderSessionReviewBar(session) {
+  const bar = document.getElementById("sessionReviewBar");
+  bar.style.display = "flex";
+  bar.innerHTML = `
+    <span class="label">Whole-session verdict (this is what finetune export filters on):</span>
+    <div class="rewardRow" id="sessionRewardRow">
+      ${[-2, -1, 0, 1, 2].map(r => `<button class="reward-btn${session.reward === r ? " selected" : ""}" data-reward="${r}">${r} ${REWARD_LABELS[r]}</button>`).join("")}
+    </div>
+    <button class="secondary" id="saveSessionReviewBtn">Save</button>
+    ${session.reviewed ? '<button class="secondary" id="clearSessionReviewBtn">Clear</button>' : ""}
+    <span class="saved-note" id="sessionReviewSavedNote">${session.reviewed ? "reviewed" : "not yet reviewed"}</span>`;
+
+  let selectedReward = session.reward;
+  bar.querySelectorAll(".reward-btn").forEach(btn => {
+    btn.onclick = () => {
+      selectedReward = parseInt(btn.dataset.reward, 10);
+      bar.querySelectorAll(".reward-btn").forEach(b => b.classList.toggle("selected", b === btn));
+    };
+  });
+  document.getElementById("saveSessionReviewBtn").onclick = async () => {
+    if (selectedReward === null || selectedReward === undefined) { alert("Pick a reward first."); return; }
+    const res = await jpost(`/api/sessions/${session.id}/review`, { reward: selectedReward });
+    if (res.error) { alert(res.error); return; }
+    document.getElementById("sessionReviewSavedNote").textContent = "saved";
+    refreshSessions();
+  };
+  const clearBtn = document.getElementById("clearSessionReviewBtn");
+  if (clearBtn) {
+    clearBtn.onclick = async () => {
+      const res = await jpost(`/api/sessions/${session.id}/review`, { clear: true });
+      if (res.error) { alert(res.error); return; }
+      refreshSessions();
+      loadActive();
+    };
+  }
+}
+
+async function selectSession(id) {
+  activeSession = id;
+  await loadActive();
+  refreshSessions();
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(async () => {
+    const data = await loadActive();
+    if (data && data.session.status !== "running") {
+      clearInterval(pollTimer);
+      pollTimer = null;
+      refreshSessions();
+    }
+  }, 1500);
+}
+
+async function loadActive() {
+  if (!activeSession) return null;
+  const data = await jget(`/api/sessions/${activeSession}`);
+  if (data.error) return null;
+  renderSteps(data.session, data.messages);
+  return data;
+}
+
+document.getElementById("refreshBtn").onclick = () => { refreshSessions(); loadActive(); };
+
+document.getElementById("saveAllBtn").onclick = async () => {
+  if (!activeSession) return;
+  const btn = document.getElementById("saveAllBtn");
+  const statusEl = document.getElementById("saveAllStatus");
+  const cards = Array.from(document.querySelectorAll(".step-card.scorable"));
+  btn.disabled = true;
+  let saved = 0, failed = 0, skipped = 0;
+  try {
+    for (const card of cards) {
+      statusEl.textContent = `saving ${saved + failed + skipped + 1}/${cards.length}…`;
+      const res = await saveStepReward({ id: activeSession }, card);
+      if (res.skipped) skipped++;
+      else if (res.error) failed++;
+      else saved++;
+    }
+  } finally {
+    btn.disabled = false;
+    statusEl.textContent = `saved ${saved} step(s)` +
+      (failed ? `, ${failed} failed` : "") +
+      (skipped ? `, ${skipped} left unscored` : "");
+  }
+};
+
+document.getElementById("exportBtn").onclick = async () => {
+  const btn = document.getElementById("exportBtn");
+  const resultEl = document.getElementById("exportResult");
+  btn.disabled = true;
+  resultEl.textContent = "exporting…";
+  try {
+    const body = {
+      require_review: document.getElementById("expRequireReview").checked,
+      all: document.getElementById("expAll").checked,
+      any_status: document.getElementById("expAnyStatus").checked,
+      strip_metadata: document.getElementById("expStripMetadata").checked,
+      val_frac: parseFloat(document.getElementById("expValFrac").value || "0"),
+    };
+    const minReward = document.getElementById("expMinReward").value;
+    if (minReward !== "") body.min_reward = parseInt(minReward, 10);
+    const out = document.getElementById("expOut").value.trim();
+    if (out) body.out = out;
+
+    const res = await jpost("/api/finetune/export", body);
+    if (res.error) { resultEl.textContent = "error: " + res.error; return; }
+    const lines = [`wrote ${res.train_count} session(s) -> ${res.out}`];
+    if (res.val_path) lines.push(`wrote ${res.val_count} session(s) -> ${res.val_path}`);
+    if (res.skipped_invalid && res.skipped_invalid.length) lines.push(`skipped ${res.skipped_invalid.length} invalid session(s)`);
+    if (res.skipped_unreviewed && res.skipped_unreviewed.length) lines.push(`skipped ${res.skipped_unreviewed.length} unreviewed/below-min-reward session(s)`);
+    if (res.by_category) {
+      const cats = Object.keys(res.by_category).sort().map(k => `${k}=${res.by_category[k]}`).join(", ");
+      if (cats) lines.push(`mix: ${cats}`);
+    }
+    resultEl.textContent = lines.join("\n");
+  } finally {
+    btn.disabled = false;
+  }
+};
+
+document.getElementById("importBtn").onclick = async () => {
+  const fileInput = document.getElementById("importFile");
+  const file = fileInput.files[0];
+  const resultEl = document.getElementById("importResult");
+  if (!file) { resultEl.textContent = "pick a file first"; return; }
+  const btn = document.getElementById("importBtn");
+  btn.disabled = true;
+  resultEl.textContent = "importing…";
+  try {
+    const content = await file.text();
+    const res = await jpost("/api/sessions/import", {
+      content,
+      overwrite: document.getElementById("importOverwrite").checked,
+      mark_finetune: document.getElementById("importFinetuneFlag").checked,
+    });
+    if (res.error) { resultEl.textContent = "error: " + res.error; return; }
+    const lines = [`imported ${res.imported.length} session(s)`];
+    if (res.skipped && res.skipped.length) {
+      lines.push(`skipped ${res.skipped.length}:`);
+      for (const s of res.skipped.slice(0, 10)) {
+        lines.push(`  ${s.session_id || "(no id)"}: ${s.reason}`);
+      }
+      if (res.skipped.length > 10) lines.push(`  ... and ${res.skipped.length - 10} more`);
+    }
+    resultEl.textContent = lines.join("\n");
+    fileInput.value = "";
+    refreshSessions();
+  } finally {
+    btn.disabled = false;
+  }
+};
+
+refreshSessions();
+setInterval(refreshSessions, 5000);
+</script>
+</body>
+</html>
