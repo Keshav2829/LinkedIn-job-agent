@@ -104,7 +104,7 @@ def _session_record(con, session_id: str) -> dict[str, Any]:
     session = db.get_session(con, session_id)
     if session is None:
         raise ValueError(f"no such session: {session_id}")
-    rows = db.get_messages(con, session_id)
+    rows = db.get_messages(con, session_id, include_hidden=False)
     messages = db.to_api_messages(rows)
     record = {
         "schema": SCHEMA,
@@ -339,6 +339,463 @@ def _write_jsonl(path: Path, records: list[dict[str, Any]], strip_metadata: bool
     return meta_path
 
 
+# --- tool-use / tool-selection datasets --------------------------------
+#
+# Two smaller, more focused datasets derived from already-exported
+# orchestrator-sft/1 trajectories (a pure file transform, no DB needed --
+# works on any export file, including one produced on another machine):
+#
+# - tool-use: one example per real tool call, teaching per-tool call
+#   syntax/usage.
+# - tool-selection: every decision point (a tool call, OR a `final`, OR an
+#   `ask`) -- a strict superset of tool-use, teaching the broader routing
+#   choice of *what to do next*, including when not to call a tool at all.
+#
+# Both use the exact same target format as the full-trajectory export --
+# the real ```action fence, tool name + its actual input, or `final`/
+# `ask` -- never reduced to a bare label. Two different output formats
+# across training stages would teach the model two different protocols;
+# this keeps it to one.
+
+TOOL_USE_SCHEMA = "orchestrator-tool-use/1"
+TOOL_SELECT_SCHEMA = "orchestrator-tool-select/1"
+
+# jobagent/orchestrator subcommands are invoked as plain shell text inside
+# run_shell's "command" input -- the single most common tool call by far
+# (87% of a real sample export) is otherwise reported as one
+# undifferentiated "run_shell" bucket, hiding that it actually covers
+# dozens of distinct jobagent actions (profile lookups, db-style queries,
+# every browse sub-action, ...) with very uneven coverage. This never
+# changes the training target (the full command stays exactly as the
+# model wrote it) -- it's purely a reporting/tagging label so that
+# coverage gap is visible, not hidden behind one tool name.
+_SUBCMD_MARKERS = ("jobagent", "orchestrator")
+
+
+def _run_shell_subcommand(command: str) -> str:
+    first = (command or "").strip().split("&&")[0].strip()  # first command in a chain
+    parts = first.split()
+    for marker in _SUBCMD_MARKERS:
+        if marker in parts:
+            idx = parts.index(marker)
+            rest = [p for p in parts[idx + 1:] if not p.startswith("-")]
+            return " ".join(rest[:2]) if rest else marker
+    if parts and parts[0] == "git":
+        return " ".join(parts[:2])
+    return parts[0] if parts else "?"
+
+
+def _decision_points(messages: list[dict[str, Any]]) -> list[tuple[int, dict[str, Any]]]:
+    """Every (index, action) where messages[index] is an assistant turn
+    with a validly-parsed action block -- a tool call, a `final`, or an
+    `ask`. A turn whose action fails to parse (a protocol error, already
+    handled by the `_protocol` observation in the live loop) is skipped --
+    there's no well-formed 'correct' target to teach for one of those."""
+    points = []
+    for i, m in enumerate(messages):
+        if m["role"] != "assistant":
+            continue
+        action = tools.extract_action(m["content"])  # content is always str -- see db.to_api_messages
+        if action is not None:
+            points.append((i, action))
+    return points
+
+
+def _decision_kind(action: dict[str, Any]) -> str:
+    return "tool" if "tool" in action else ("final" if "final" in action else "ask")
+
+
+def _message_len(m: dict[str, Any]) -> int:
+    """Rough char-count proxy for token count (~4 chars/token -- the same
+    approximation the training notebooks' MAX_LENGTH comments already
+    use). An `image_url` block costs real vision tokens, not text ones,
+    so it's excluded here; it never counts against a text char budget."""
+    content = m.get("content")
+    if isinstance(content, str):
+        return len(content)
+    if isinstance(content, list):
+        return sum(len(b.get("text", "")) for b in content if isinstance(b, dict) and b.get("type") == "text")
+    return 0
+
+
+def _last_skill_load(messages: list[dict[str, Any]], end: int) -> tuple[int, int | None] | None:
+    """Index of the most recent `read_skill` tool call strictly before
+    `end`, and the index of its observation (the SKILL.md text the model
+    actually read), if the trajectory got that far. None if no skill was
+    ever loaded earlier in the session.
+
+    `end` itself is excluded: if the decision point being trained *is* the
+    skill-load call, there's no earlier load to recover -- and no
+    observation yet anyway, since the result only shows up the turn after.
+    """
+    for i in range(end - 1, 1, -1):
+        m = messages[i]
+        if m["role"] != "assistant":
+            continue
+        action = tools.extract_action(m["content"])
+        if action and action.get("tool") == "read_skill":
+            obs_i = i + 1 if i + 1 < len(messages) and messages[i + 1]["role"] == "user" else None
+            return (i, obs_i)
+    return None
+
+
+def _truncate_context(messages: list[dict[str, Any]], end: int, max_chars: int | None) -> list[dict[str, Any]]:
+    """`messages[:end + 1]`, trimmed to a rough `max_chars` budget.
+
+    Some orchestrator sessions run to 100+ turns, and keeping the *entire*
+    prefix for every decision point in one (what `_derive_examples` does
+    when this is `None`) means a late decision's example carries the
+    whole history -- measured on a real export, median ~29k tokens, max
+    ~66k, far past what a free-tier GPU can train on. `None` keeps the
+    full, untruncated prefix.
+
+    Always keeps `messages[0]` (system prompt) and `messages[1]` (the
+    original task) -- dropping either loses what the trajectory is *for*
+    -- then fills backward from `end` with whole messages only (never
+    splits one) until the next one would bust the budget. `messages[end]`
+    itself -- the decision turn, i.e. this example's training target --
+    is always included no matter the budget: it's appended unconditionally
+    on the loop's first iteration, before the budget check ever runs, so
+    an example's target is never the thing that gets dropped. This can
+    leave a gap between the kept head and the kept tail (the middle of a
+    long session is what gets dropped) -- deliberate: recent context is
+    what matters most for "what do I do next", the same tradeoff a
+    sliding context window makes at real inference time.
+
+    The one exception to "the middle is fair game to drop": a `read_skill`
+    call and its result, if the most recent one falls in that dropped
+    middle (see `_last_skill_load`). A skill load is a mid-session
+    instruction change -- SKILL.md content the model was told to follow
+    for the rest of the task -- not just color on how we got here, so
+    losing it would leave later decisions in the kept tail looking
+    unmotivated (or wrong) without the instructions they were actually
+    following. Kept unconditionally too, same as the head and the target,
+    so it never gets squeezed out by the budget either.
+    """
+    if max_chars is None or end < 2:
+        return messages[: end + 1]
+    head = messages[:2]
+    total = sum(_message_len(m) for m in head)
+    window: list[dict[str, Any]] = []
+    window_start = end + 1
+    for i in range(end, 1, -1):
+        cost = _message_len(messages[i])
+        if window and total + cost > max_chars:
+            break
+        window.append(messages[i])
+        total += cost
+        window_start = i
+    window.reverse()
+
+    skill_msgs: list[dict[str, Any]] = []
+    skill = _last_skill_load(messages, end)
+    if skill is not None:
+        action_i, obs_i = skill
+        if action_i < window_start:  # not already covered by the window
+            skill_msgs.append(messages[action_i])
+            if obs_i is not None and obs_i < window_start:
+                skill_msgs.append(messages[obs_i])
+
+    return head + skill_msgs + window
+
+
+# A nonzero exit_code is run_shell's *own* signal that the command it ran
+# failed -- a bad/missing jobagent argument, an invalid job id, a
+# Playwright locator error, a timeout. Unlike every other tool (and
+# run_shell's own pre-flight checks -- empty command, disallowed by the
+# allowlist), tool_run_shell never prefixes this "ERROR" -- it just
+# reports "exit_code: N" plus stdout/stderr either way (see
+# tools.tool_run_shell). Checked only for run_shell; for every other tool,
+# the "ERROR" prefix check below is already complete on its own.
+_RUN_SHELL_EXIT_RE = re.compile(r"exit_code:\s*(-?\d+)")
+
+
+def _tool_call_errored(tool: str, next_message: dict[str, Any] | None) -> bool:
+    """True if the observation immediately following a tool call shows the
+    call failed -- an invalid command or invalid input argument, not a
+    legitimate thing to teach as "how to call this tool". A decision point
+    with no following observation (shouldn't happen in a `completed`
+    session, which always ends on `final`) is treated as not-errored --
+    there's nothing to check."""
+    if next_message is None or next_message.get("role") != "user":
+        return False
+    content = next_message.get("content")
+    if not isinstance(content, str):
+        return False
+    match = _OBSERVATION_PREFIX_RE.match(content)
+    text = content[match.end():] if match else content
+    if text.lstrip().startswith("ERROR"):
+        return True
+    if tool == "run_shell":
+        m = _RUN_SHELL_EXIT_RE.search(text)
+        if m and int(m.group(1)) != 0:
+            return True
+    return False
+
+
+def _derive_examples(
+    record: dict[str, Any], schema: str, keep_kind, exclude_errors: bool = True,
+    max_context_chars: int | None = None,
+) -> tuple[list[dict[str, Any]], int]:
+    """Returns (examples, excluded_error_count)."""
+    messages = record.get("messages") or []
+    out = []
+    excluded = 0
+    for i, action in _decision_points(messages):
+        kind = _decision_kind(action)
+        if not keep_kind(kind):
+            continue
+        tool = action.get("tool")  # None for final/ask
+        if exclude_errors and kind == "tool":
+            next_message = messages[i + 1] if i + 1 < len(messages) else None
+            if _tool_call_errored(tool, next_message):
+                excluded += 1
+                continue
+        subcommand = None
+        if tool == "run_shell":
+            subcommand = _run_shell_subcommand((action.get("input") or {}).get("command", ""))
+        out.append({
+            "schema": schema,
+            "session_id": record.get("session_id"),
+            "seq": i,
+            "kind": kind,
+            "tool": tool,
+            "subcommand": subcommand,  # which jobagent/orchestrator/git action, only for run_shell
+            "input": action.get("input"),  # the tool's raw input (None for final/ask) -- lets a
+                                             # corpus-level pass (export_tool_datasets' dedup) or a
+                                             # later scorer check "right tool, right input" without
+                                             # re-parsing the action block.
+            # The full prefix up to and including this one decision --
+            # same context the live model would actually see, just cut
+            # short here instead of continuing the whole session (and,
+            # with max_context_chars set, actually truncated the same way
+            # a real sliding context window would be -- see
+            # _truncate_context). The target (messages[-1]) is untouched:
+            # full reasoning text + the real ```action fence, not reduced
+            # to a bare label.
+            "messages": _truncate_context(messages, i, max_context_chars),
+        })
+    return out, excluded
+
+
+def derive_tool_use_examples(
+    record: dict[str, Any], exclude_errors: bool = True, max_context_chars: int | None = None,
+) -> list[dict[str, Any]]:
+    """One example per real tool call -- teaches per-tool call syntax. By
+    default, skips a call whose observation shows it failed (invalid
+    command / invalid input argument) -- see `_tool_call_errored`; pass
+    `exclude_errors=False` to keep those in too."""
+    examples, _ = _derive_examples(record, TOOL_USE_SCHEMA, keep_kind=lambda k: k == "tool",
+                                    exclude_errors=exclude_errors, max_context_chars=max_context_chars)
+    return examples
+
+
+def derive_tool_selection_examples(
+    record: dict[str, Any], exclude_errors: bool = True, max_context_chars: int | None = None,
+) -> list[dict[str, Any]]:
+    """Every decision point (tool call, final, or ask) -- teaches routing,
+    including when *not* to call a tool. Strict superset of tool-use (same
+    `exclude_errors` default/behavior for its `tool` entries)."""
+    examples, _ = _derive_examples(record, TOOL_SELECT_SCHEMA, keep_kind=lambda k: True,
+                                    exclude_errors=exclude_errors, max_context_chars=max_context_chars)
+    return examples
+
+
+def _dedup_cap_key(tool: str, subcommand: str | None) -> str:
+    """What `max_per_key` caps on: a run_shell call's actual subcommand
+    (since that's where real diversity -- and real imbalance -- lives),
+    or just the plain tool name for everything else."""
+    return f"{tool}:{subcommand}" if subcommand else tool
+
+
+def _apply_dedup_and_cap(
+    examples: list[dict[str, Any]], max_per_key: int | None, dedup_exact: bool,
+) -> tuple[list[dict[str, Any]], int, int]:
+    """Corpus-level filter, applied once across every input file so
+    `tool_use.jsonl` and `tool_select.jsonl` always agree on which tool
+    calls survived. Only `kind == "tool"` entries are touched -- `final`/
+    `ask` always pass through (they're already rare; nothing to cap).
+
+    Two independent cuts, in order, first-encountered-wins (not random,
+    so output is reproducible run to run):
+
+    1. `dedup_exact`: drop a tool call whose (tool, input) is byte-for-
+       byte identical to one already kept -- the same call repeated
+       teaches nothing new the second time (e.g. the same `job upsert
+       --job-id X` retried with trivially reworded text still counts as
+       a *different* input here and is NOT caught by this -- only an
+       exact repeat is; see `max_per_key` for the broader fix).
+    2. `max_per_key`: once a key (`_dedup_cap_key`) has contributed this
+       many examples, drop the rest of that key -- so the handful of most
+       common actions (`browse find`, `job upsert`, ...) can't drown out
+       everything else while the corpus is still small.
+
+    Returns (filtered_examples, removed_duplicates, removed_over_cap).
+    """
+    seen_actions: set[tuple[str, str]] = set()
+    per_key_count: dict[str, int] = {}
+    kept: list[dict[str, Any]] = []
+    removed_duplicates = 0
+    removed_over_cap = 0
+    for ex in examples:
+        if ex["kind"] != "tool":
+            kept.append(ex)
+            continue
+        if dedup_exact:
+            action_key = (ex["tool"], json.dumps(ex["input"], sort_keys=True))
+            if action_key in seen_actions:
+                removed_duplicates += 1
+                continue
+            seen_actions.add(action_key)
+        if max_per_key is not None:
+            key = _dedup_cap_key(ex["tool"], ex["subcommand"])
+            count = per_key_count.get(key, 0)
+            if count >= max_per_key:
+                removed_over_cap += 1
+                continue
+            per_key_count[key] = count + 1
+        kept.append(ex)
+    return kept, removed_duplicates, removed_over_cap
+
+
+def _bucket_examples(examples: list[dict[str, Any]]) -> dict[str, Any]:
+    """Split one list of decision points into the tool_use/tool_select
+    shape plus the by_tool/by_run_shell_subcommand/by_kind counts -- the
+    part of `export_tool_datasets` that has to run identically for a train
+    split and a val split."""
+    tool_use: list[dict[str, Any]] = []
+    tool_select: list[dict[str, Any]] = []
+    by_tool: dict[str, int] = {}
+    by_run_shell_subcommand: dict[str, int] = {}
+    by_kind: dict[str, int] = {"tool": 0, "final": 0, "ask": 0}
+
+    for ex in examples:
+        tool_select.append({**ex, "schema": TOOL_SELECT_SCHEMA})
+        by_kind[ex["kind"]] = by_kind.get(ex["kind"], 0) + 1
+        if ex["kind"] == "tool":
+            tool_use.append({**ex, "schema": TOOL_USE_SCHEMA})
+            by_tool[ex["tool"]] = by_tool.get(ex["tool"], 0) + 1
+            if ex["subcommand"]:
+                by_run_shell_subcommand[ex["subcommand"]] = (
+                    by_run_shell_subcommand.get(ex["subcommand"], 0) + 1
+                )
+    return {
+        "tool_use": tool_use, "tool_select": tool_select, "by_tool": by_tool,
+        "by_run_shell_subcommand": by_run_shell_subcommand, "by_kind": by_kind,
+    }
+
+
+def export_tool_datasets(
+    in_paths: list[Path], tool_use_out: Path, tool_select_out: Path,
+    strip_metadata: bool = False, exclude_errors: bool = True,
+    max_per_key: int | None = None, dedup_exact: bool = True,
+    val_frac: float = 0.0, seed: int = 3407, max_context_chars: int | None = None,
+) -> dict[str, Any]:
+    """Read one or more orchestrator-sft/1 JSONL files (e.g. `finetune
+    export`'s own output) and derive both datasets from their trajectories
+    in one pass. No DB involved -- works on any already-exported file.
+
+    Every slice's last message is guaranteed `assistant` with a parseable
+    action by construction (that's exactly the selection criterion), and
+    the source file already passed `validate_trajectory` when it was
+    first exported -- so there's no separate structural validation here.
+
+    `exclude_errors` (default on): a tool call whose observation shows it
+    failed -- an invalid command or invalid input argument, not legitimate
+    "how to call this tool" material -- is dropped rather than taught as a
+    positive example. See `_tool_call_errored`.
+
+    `dedup_exact`/`max_per_key`: see `_apply_dedup_and_cap`. Applied once,
+    corpus-wide, after collecting every decision point from every record
+    -- not per record, and not independently per output file -- so the
+    two files never disagree on which tool calls survived.
+
+    `val_frac > 0`: also writes a validation split, grouped by
+    `session_id` (every decision point from the same session shares
+    near-identical prior context, the same leakage risk `export_all`
+    avoids by grouping on task) -- never splits one session's decision
+    points across train and val. Train goes to `tool_use_out`/
+    `tool_select_out`; val goes to the same path with `.val` inserted
+    before the suffix, same convention as `export_all`.
+
+    `max_context_chars`: see `_truncate_context` -- some orchestrator
+    sessions run long enough that the full prefix for a late decision
+    point is far past what a free-tier GPU can train on (measured:
+    median ~29k tokens, max ~66k, on a real export). `None` (default)
+    keeps the full, untruncated prefix.
+    """
+    all_examples: list[dict[str, Any]] = []
+    excluded_error_count = 0
+
+    for path in in_paths:
+        for line in Path(path).read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            record = json.loads(line)
+            examples, excluded = _derive_examples(
+                record, TOOL_SELECT_SCHEMA, keep_kind=lambda k: True, exclude_errors=exclude_errors,
+                max_context_chars=max_context_chars,
+            )
+            excluded_error_count += excluded
+            all_examples.extend(examples)
+
+    filtered, removed_duplicates, removed_over_cap = _apply_dedup_and_cap(
+        all_examples, max_per_key=max_per_key, dedup_exact=dedup_exact,
+    )
+
+    tool_use_out, tool_select_out = Path(tool_use_out), Path(tool_select_out)
+    report: dict[str, Any] = {
+        "excluded_error_count": excluded_error_count,
+        "excluded_duplicate_count": removed_duplicates,
+        "excluded_over_cap_count": removed_over_cap,
+        "val_tool_use_path": None, "val_tool_select_path": None,
+        "val_tool_use_count": 0, "val_tool_select_count": 0,
+    }
+
+    if val_frac <= 0:
+        bucketed = _bucket_examples(filtered)
+        _write_jsonl(tool_use_out, bucketed["tool_use"], strip_metadata)
+        _write_jsonl(tool_select_out, bucketed["tool_select"], strip_metadata)
+        report.update({
+            "tool_use_count": len(bucketed["tool_use"]), "tool_use_by_tool": bucketed["by_tool"],
+            "run_shell_by_subcommand": bucketed["by_run_shell_subcommand"],
+            "tool_select_count": len(bucketed["tool_select"]), "tool_select_by_kind": bucketed["by_kind"],
+        })
+        return report
+
+    by_session: dict[str, list[dict[str, Any]]] = {}
+    for ex in filtered:
+        by_session.setdefault(ex["session_id"], []).append(ex)
+    session_keys = sorted(by_session)
+    random.Random(seed).shuffle(session_keys)
+    n_val_sessions = max(1, int(len(session_keys) * val_frac)) if len(session_keys) > 1 else 0
+    val_keys = set(session_keys[:n_val_sessions])
+
+    train_examples = [ex for k in session_keys if k not in val_keys for ex in by_session[k]]
+    val_examples = [ex for k in session_keys if k in val_keys for ex in by_session[k]]
+
+    train_bucketed = _bucket_examples(train_examples)
+    val_bucketed = _bucket_examples(val_examples)
+
+    val_tool_use_out = tool_use_out.with_name(tool_use_out.stem + ".val" + tool_use_out.suffix)
+    val_tool_select_out = tool_select_out.with_name(tool_select_out.stem + ".val" + tool_select_out.suffix)
+
+    _write_jsonl(tool_use_out, train_bucketed["tool_use"], strip_metadata)
+    _write_jsonl(tool_select_out, train_bucketed["tool_select"], strip_metadata)
+    _write_jsonl(val_tool_use_out, val_bucketed["tool_use"], strip_metadata)
+    _write_jsonl(val_tool_select_out, val_bucketed["tool_select"], strip_metadata)
+
+    report.update({
+        "tool_use_count": len(train_bucketed["tool_use"]), "tool_use_by_tool": train_bucketed["by_tool"],
+        "run_shell_by_subcommand": train_bucketed["by_run_shell_subcommand"],
+        "tool_select_count": len(train_bucketed["tool_select"]), "tool_select_by_kind": train_bucketed["by_kind"],
+        "val_tool_use_path": str(val_tool_use_out), "val_tool_use_count": len(val_bucketed["tool_use"]),
+        "val_tool_select_path": str(val_tool_select_out), "val_tool_select_count": len(val_bucketed["tool_select"]),
+    })
+    return report
+
+
 def export_all(
     con,
     out_path: Path,
@@ -420,7 +877,7 @@ def export_all(
             if reward is None or reward < min_reward:
                 skipped_unreviewed.append(row["id"])
                 continue
-        raw_rows = db.get_messages(con, row["id"])
+        raw_rows = db.get_messages(con, row["id"], include_hidden=False)
         errors = validate_trajectory(raw_rows)
         if errors:
             skipped_invalid.append({"session_id": row["id"], "errors": errors})

@@ -169,9 +169,11 @@ def cmd_sessions_show(args: argparse.Namespace) -> int:
     if session["status"] == "waiting_for_user":
         print(f"\nwaiting for an answer — python -m orchestrator sessions answer {session['id']} \"...\"")
     elif session["status"] in ("failed", "aborted", "stopped"):
-        print(f"\n{session['status']} — python -m orchestrator sessions retry {session['id']}")
+        print(f"\n{session['status']} — python -m orchestrator sessions retry {session['id']}"
+              f" (or sessions note {session['id']} \"...\" first, to steer the retry)")
     elif session["status"] == "running":
-        print(f"\nrunning — python -m orchestrator sessions stop {session['id']} to interrupt it")
+        print(f"\nrunning — python -m orchestrator sessions stop {session['id']} to interrupt it"
+              f", or sessions note {session['id']} \"...\" to steer it without stopping")
     return 0
 
 
@@ -362,6 +364,30 @@ def cmd_sessions_stop(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_sessions_note(args: argparse.Namespace) -> int:
+    cfg = _cfg_from_args(args)
+    con = db.connect(cfg.db_path)
+    try:
+        session = db.get_session(con, args.session_id)
+    finally:
+        con.close()
+    if session is None:
+        print(f"no such session: {args.session_id}", file=sys.stderr)
+        return 1
+    if session["status"] not in agent.NOTE_ALLOWED_STATUSES:
+        print(f"session can't take a note right now (status: {session['status']})", file=sys.stderr)
+        return 1
+
+    agent.inject_note(cfg, args.session_id, args.text)
+    if session["status"] == "running":
+        print(f"note sent to session {args.session_id} -- it'll be in the model's "
+              "context on its next step, and stripped from any fine-tune export.")
+    else:
+        print(f"note attached to session {args.session_id} ({session['status']}) -- it'll be "
+              f"in context once you run: python -m orchestrator sessions retry {args.session_id}")
+    return 0
+
+
 def cmd_ui(args: argparse.Namespace) -> int:
     from . import ui
 
@@ -409,6 +435,33 @@ def cmd_finetune_validate(args: argparse.Namespace) -> int:
     for p in report["problems"]:
         _safe_print(f"  line {p['line']}: {'; '.join(p.get('errors') or [])}")
     return 0 if report["invalid"] == 0 else 1
+
+
+def cmd_finetune_export_tool_data(args: argparse.Namespace) -> int:
+    report = finetune.export_tool_datasets(
+        [Path(p) for p in args.in_paths], Path(args.tool_use_out), Path(args.tool_select_out),
+        strip_metadata=args.strip_metadata, exclude_errors=not args.include_errors,
+        max_per_key=args.max_per_key, dedup_exact=not args.no_dedup, val_frac=args.val_frac,
+        max_context_chars=args.max_context_chars,
+    )
+    print(f"tool-use: {report['tool_use_count']} example(s) -> {args.tool_use_out}")
+    print(f"  by tool: {report['tool_use_by_tool']}")
+    print(f"  run_shell by subcommand: {report['run_shell_by_subcommand']}")
+    print(f"tool-selection: {report['tool_select_count']} example(s) -> {args.tool_select_out}")
+    print(f"  by kind: {report['tool_select_by_kind']}")
+    if report["val_tool_use_path"]:
+        print(f"val tool-use: {report['val_tool_use_count']} example(s) -> {report['val_tool_use_path']}")
+        print(f"val tool-selection: {report['val_tool_select_count']} example(s) -> {report['val_tool_select_path']}")
+    if not args.include_errors:
+        print(f"excluded {report['excluded_error_count']} failed tool call(s) "
+              "(invalid command / invalid input argument -- pass --include-errors to keep them)")
+    if not args.no_dedup:
+        print(f"excluded {report['excluded_duplicate_count']} exact-duplicate tool call(s) "
+              "(pass --no-dedup to keep them)")
+    if args.max_per_key is not None:
+        print(f"excluded {report['excluded_over_cap_count']} tool call(s) over the "
+              f"--max-per-key {args.max_per_key} cap")
+    return 0
 
 
 def cmd_config_show(args: argparse.Namespace) -> int:
@@ -535,6 +588,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_stop.add_argument("session_id")
     p_stop.set_defaults(func=cmd_sessions_stop)
 
+    p_note = sessions_sub.add_parser(
+        "note", parents=[common],
+        help="attach a private steering note to a running (or stopped/failed/aborted, before retry) "
+             "session -- never exported",
+    )
+    p_note.add_argument("session_id")
+    p_note.add_argument("text")
+    p_note.set_defaults(func=cmd_sessions_note)
+
     p_delete = sessions_sub.add_parser(
         "delete", parents=[common], help="permanently delete a session, its messages, and its fine-tune export",
     )
@@ -630,6 +692,48 @@ def build_parser() -> argparse.ArgumentParser:
     p_ft_validate = finetune_sub.add_parser("validate", help="validate an already-exported JSONL file")
     p_ft_validate.add_argument("file")
     p_ft_validate.set_defaults(func=cmd_finetune_validate)
+
+    p_ft_tools = finetune_sub.add_parser(
+        "export-tool-data",
+        help="derive tool-use and tool-selection datasets from one or more already-exported JSONL files",
+    )
+    p_ft_tools.add_argument(
+        "--in", dest="in_paths", action="append", required=True,
+        help="an orchestrator-sft/1 JSONL export file (repeatable)",
+    )
+    p_ft_tools.add_argument("--tool-use-out", default="orchestrator/data/finetune/tool_use.jsonl")
+    p_ft_tools.add_argument("--tool-select-out", default="orchestrator/data/finetune/tool_select.jsonl")
+    p_ft_tools.add_argument(
+        "--strip-metadata", action="store_true",
+        help="write bare {'messages': [...]} lines, metadata to a same-order <file>.meta.jsonl sidecar",
+    )
+    p_ft_tools.add_argument(
+        "--include-errors", action="store_true",
+        help="keep a tool call whose observation shows it failed (invalid command / invalid input "
+             "argument) instead of dropping it -- off by default",
+    )
+    p_ft_tools.add_argument(
+        "--max-per-key", type=int, default=None,
+        help="cap how many examples any one run_shell subcommand (or other tool) contributes, so "
+             "the most common few actions can't drown out everything else -- unset by default (no cap)",
+    )
+    p_ft_tools.add_argument(
+        "--no-dedup", action="store_true",
+        help="keep an exact repeat of the same tool+input -- deduped by default",
+    )
+    p_ft_tools.add_argument(
+        "--val-frac", type=float, default=0.0,
+        help="also write a validation split grouped by session_id (default: 0, single file) -- "
+             "writes <tool-use-out>.val.jsonl / <tool-select-out>.val.jsonl",
+    )
+    p_ft_tools.add_argument(
+        "--max-context-chars", type=int, default=None,
+        help="truncate each example's message prefix to roughly this many characters (~4 chars/token), "
+             "keeping the system prompt + original task plus as much recent context as fits -- unset "
+             "by default (full prefix). Some orchestrator sessions run long enough that the full prefix "
+             "for a late decision point is far past what a free-tier GPU can train on",
+    )
+    p_ft_tools.set_defaults(func=cmd_finetune_export_tool_data)
 
     p_config = sub.add_parser("config", help="configuration")
     config_sub = p_config.add_subparsers(dest="config_command", required=True)

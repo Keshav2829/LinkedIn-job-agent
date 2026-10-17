@@ -35,6 +35,14 @@ DEFAULT_CONFIG = {
     "auto_apply_min_score": 70,
     "review_min_score": 55,
     "outreach_requires_approval": True,
+    # Off by default -- flip to True to require an explicit `job approve`
+    # before a scored, quota-eligible job is ever returned by `job queue`
+    # (and so, before the browser ever gets told to submit it). Mirrors
+    # outreach_requires_approval's queued->approved gate above. Meant to be
+    # turned on specifically around an unsupervised/automated run (e.g. an
+    # orchestrator session driven by a local or Claude model) rather than
+    # left on for a human- or subagent-driven session where it'd just add a
+    # manual step to a flow that already has a person reading every result.
     "apply_requires_approval": False,
     "contacts_per_company": 4,
     "min_days_between_touches": 5,
@@ -391,15 +399,56 @@ def cmd_job(con, args):
         q = quota(con)
         limit = min(args.limit or 99, q["applications"]["left"])
         minscore = args.min_score if args.min_score is not None else cfg["auto_apply_min_score"]
+        # With apply_requires_approval on, a job must have been explicitly
+        # `job approve`d before it's ever returned as ready to apply to --
+        # mirrors outreach's queued->approved->next pattern (see cmd_outreach
+        # "next"), so the actual Easy Apply submission is gated at this data
+        # layer rather than relying on a caller (human, subagent, or an
+        # unsupervised orchestrator session) to read and follow instructions
+        # correctly. Off (default): unchanged from before this flag existed.
+        status_filter = "approved" if cfg["apply_requires_approval"] else "queued"
+        r = rows(con.execute(
+            "SELECT j.id,j.job_id,j.title,j.company_name,j.location,j.url,j.easy_apply,"
+            "j.match_score,j.match_reasons FROM jobs j "
+            "LEFT JOIN applications a ON a.job_id=j.id "
+            "WHERE a.id IS NULL AND j.status=? AND j.match_score>=? "
+            "ORDER BY j.match_score DESC, j.discovered_at ASC LIMIT ?",
+            (status_filter, minscore, max(0, limit))))
+        for x in r:
+            x["match_reasons"] = jloads(x["match_reasons"], [])
+        out({"quota_left": q["applications"]["left"], "count": len(r), "jobs": r,
+             "approval_required": cfg["apply_requires_approval"]})
+        return
+
+    if args.action == "pending":
+        # Jobs scored well enough to be candidates but (when
+        # apply_requires_approval is on) not yet decided on -- the queue's
+        # counterpart to outreach's "pending". Useful even with the gate
+        # off, to see what `job queue` is about to draw from.
+        cfg = get_config(con)
+        minscore = args.min_score if args.min_score is not None else cfg["auto_apply_min_score"]
         r = rows(con.execute(
             "SELECT j.id,j.job_id,j.title,j.company_name,j.location,j.url,j.easy_apply,"
             "j.match_score,j.match_reasons FROM jobs j "
             "LEFT JOIN applications a ON a.job_id=j.id "
             "WHERE a.id IS NULL AND j.status='queued' AND j.match_score>=? "
-            "ORDER BY j.match_score DESC, j.discovered_at ASC LIMIT ?", (minscore, max(0, limit))))
+            "ORDER BY j.match_score DESC, j.discovered_at ASC LIMIT ?",
+            (minscore, args.limit or 25)))
         for x in r:
             x["match_reasons"] = jloads(x["match_reasons"], [])
-        out({"quota_left": q["applications"]["left"], "count": len(r), "jobs": r})
+        out({"count": len(r), "pending": r})
+        return
+
+    if args.action in ("approve", "reject"):
+        status = "approved" if args.action == "approve" else "rejected"
+        job = one(con.execute("SELECT id FROM jobs WHERE job_id=?", (args.job_id,)))
+        if not job:
+            out({"ok": False, "error": "unknown job_id"}); return
+        con.execute("UPDATE jobs SET status=?, skip_reason=?, updated_at=? WHERE id=?",
+                    (status, args.reason, D.utcnow(), job["id"]))
+        con.commit()
+        D.log_event(con, f"job_{status}", args.job_id, {"reason": args.reason})
+        out({"ok": True, "job_id": args.job_id, "status": status})
         return
 
     if args.action == "applied":
@@ -1886,7 +1935,16 @@ def cmd_browse(con, args):
     if a == "fill":
         if not (args.ref and args.value is not None):
             raise ValueError("browse fill needs --ref and --value")
-        return out(B.fill(args.ref, args.value, blur=not args.no_blur, db_path=args.db, **kw))
+        # No shell -- bash, PowerShell, or cmd -- turns a literal "\n" typed
+        # inside a quoted --value into a real newline; all three pass it
+        # through as the two characters backslash + n. That's exactly how a
+        # multi-line message body gets written on one command line, so
+        # decode it here rather than require an actual embedded line break
+        # in the shell quoting. A value that already has a real newline
+        # (e.g. from a multi-line quoted string) has no backslash to match
+        # and passes through untouched.
+        value = args.value.replace("\\r\\n", "\n").replace("\\n", "\n")
+        return out(B.fill(args.ref, value, blur=not args.no_blur, db_path=args.db, **kw))
     if a == "select":
         if not (args.ref and args.value):
             raise ValueError("browse select needs --ref and --value")
@@ -1947,7 +2005,8 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--name"); g.add_argument("--json"); g.add_argument("--status")
 
     g = sub.add_parser("job")
-    g.add_argument("action", choices=["seen", "upsert", "score", "queue", "applied", "skip", "get", "list"])
+    g.add_argument("action", choices=["seen", "upsert", "score", "queue", "pending", "approve",
+                                      "reject", "applied", "skip", "get", "list"])
     g.add_argument("--job-id"); g.add_argument("--id", type=int); g.add_argument("--json")
     g.add_argument("--min-score", type=int); g.add_argument("--limit", type=int)
     g.add_argument("--method", default="easy_apply"); g.add_argument("--resume")

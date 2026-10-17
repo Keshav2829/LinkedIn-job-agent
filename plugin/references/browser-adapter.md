@@ -130,6 +130,13 @@ validation error that appeared. That is the "verify before advancing" rule
 below, enforced by the tool instead of remembered by the agent — if `error` is
 non-empty, fix it before clicking Review.
 
+For a multi-line `--value` (a message body, a long-form screening answer),
+type a literal `\n` inside the quoted string — `browse fill` decodes it to a
+real line break, since no shell does that on its own, and types it as
+Shift+Enter rather than a bare Enter so a richtext box (the message compose
+box in particular) doesn't submit mid-type. See browser-playbook.md §5 for
+the full explanation and a worked example.
+
 Browser MCP tool names are registered without a `browser_` prefix in the source
 (`snapshot`, `click`, `type`, `selectOption`, `hover`, `drag`). Your client
 namespaces them — `mcp__browsermcp__snapshot` when configured locally, or

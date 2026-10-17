@@ -127,7 +127,12 @@ one at a time, with a 25–70 s pause between:
   free personalized notes run out mid-run, the block and the no-note
   recovery are each their own fully grounded `trace log` step (§4/§9) — not
   folded into a later step's `instruction` text.
-- **message kinds** → browser-playbook §5 (Message → type → attach resume → Send)
+- **message kinds** → browser-playbook §5 (Message → type → attach resume → Send).
+  The body from `outreach pending` has real line breaks in it — typing it with
+  `browse fill --value` on the CLI means writing those as a literal `\n`
+  inside the quoted string (`browser-playbook §5, "Writing a multi-line
+  body"`), not pasting an actual newline, which no shell passes through as
+  one.
 
 Record the outcome truthfully — the store is only useful if it matches reality:
 

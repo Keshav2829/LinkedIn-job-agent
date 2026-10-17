@@ -514,11 +514,20 @@ def build_assist_prompt(rec: dict, field: str, instruction: str, prev_rec: dict 
 
 
 def call_claude(prompt: str, model: str = "sonnet", timeout: int = 120) -> tuple[str | None, str | None]:
-    cmd = ["claude", "-p", prompt, "--output-format", "json", "--model", model,
+    # `prompt` goes over stdin, not as a `-p <prompt>` argv element -- a
+    # long prompt in argv can exceed Windows' ~32K-character command-line
+    # limit (CreateProcess then fails with WinError 206, surfaced by
+    # Python as a plain FileNotFoundError with no hint of the real cause;
+    # see orchestrator/llm.py's ClaudeCLIClient, which hit this for real
+    # with an unbounded prompt). This function's prompts are bounded
+    # (~6000 chars, see THINKING_PROMPT/ASSIST_PROMPT's [:4000]/[:2000]
+    # slices) so it's unlikely to bite here in practice -- fixed anyway,
+    # since stdin has no such limit and costs nothing.
+    cmd = ["claude", "-p", "--output-format", "json", "--model", model,
            "--restricted", "--strict-mcp-config", "--permission-prompts", "none"]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
-                              stdin=subprocess.DEVNULL, encoding="utf-8", errors="replace")
+        proc = subprocess.run(cmd, input=prompt, capture_output=True, text=True, timeout=timeout,
+                              encoding="utf-8", errors="replace")
     except FileNotFoundError:
         return None, "claude CLI not found on PATH"
     except subprocess.TimeoutExpired:

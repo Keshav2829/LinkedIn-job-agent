@@ -195,20 +195,50 @@ _JS_HELPERS = r"""
     return true;
   };
 
+  // LinkedIn renders some of its own overlays (the connect-request "Add a
+  // note" popup, the messaging panel) inside an open shadow root -- e.g.
+  // `#interop-outlet` -- not a browser extension as the name suggests.
+  // Plain `document.querySelectorAll` never descends into a shadow root,
+  // so a dialog living in one is invisible to every query below unless it
+  // goes through here instead. Playwright's own locator engine already
+  // pierces open shadow DOM (that's why `click`/`fill` work once a ref is
+  // stamped) -- this is only needed for our own `page.evaluate` JS.
+  window.__ja.deepQueryAll = (selector, root) => {
+    root = root || document;
+    const out = [];
+    const scan = (node) => {
+      out.push(...node.querySelectorAll(selector));
+      for (const el of node.querySelectorAll('*')) {
+        if (el.shadowRoot) scan(el.shadowRoot);
+      }
+    };
+    scan(root);
+    return out;
+  };
+
+  // IDs referenced by aria-labelledby / label[for] are only unique within
+  // their own root -- document.getElementById can't see into a shadow
+  // root, so a label for a shadow-hosted field silently came back empty.
+  window.__ja.rootOf = (el) => {
+    const root = el.getRootNode();
+    return root && root.getElementById ? root : document;
+  };
+
   window.__ja.name = (el) => {
     const pick = [
       el.getAttribute('aria-label'),
       (() => {
         const id = el.getAttribute('aria-labelledby');
         if (!id) return null;
+        const root = window.__ja.rootOf(el);
         return id.split(/\s+/).map(i => {
-          const n = document.getElementById(i);
+          const n = root.getElementById(i);
           return n ? n.innerText : '';
         }).join(' ');
       })(),
       (() => {
         if (!el.id) return null;
-        const lab = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
+        const lab = window.__ja.rootOf(el).querySelector(`label[for="${CSS.escape(el.id)}"]`);
         return lab ? lab.innerText : null;
       })(),
       (() => {
@@ -254,10 +284,34 @@ _JS_HELPERS = r"""
   // dialog; when one is open, nothing outside it is reachable anyway, so
   // scoping to it cuts both noise and the chance of clicking the page behind.
   window.__ja.scope = () => {
-    const dialogs = [...document.querySelectorAll('[role="dialog"], dialog[open]')]
-      .filter(window.__ja.visible);
+    const dialogs = window.__ja.deepQueryAll(
+      '[role="dialog"], [role="alertdialog"], dialog[open], [aria-modal="true"]'
+    ).filter(window.__ja.visible);
     if (dialogs.length) return dialogs[dialogs.length - 1];
     return document.body;
+  };
+
+  // Most LinkedIn pages never scroll `window` at all -- the feed, the
+  // messaging list, invitation manager etc. all put the real scrollbar on an
+  // inner container (e.g. `<main id="workspace">`) sized to sit under a
+  // fixed header, so `document.scrollingElement` stays pinned at the top
+  // forever. A wheel event only moves whatever element it lands on, so
+  // `scroll` has to find that inner container and aim at it -- the fixed
+  // header above it doesn't move no matter how hard you scroll there.
+  window.__ja.scrollTarget = () => {
+    const root = window.__ja.scope();
+    let best = null, bestArea = 0;
+    const consider = (el) => {
+      const s = getComputedStyle(el);
+      if (!/(auto|scroll|overlay)/.test(s.overflowY)) return;
+      if (el.scrollHeight <= el.clientHeight + 20) return;
+      const r = el.getBoundingClientRect();
+      const area = r.width * r.height;
+      if (area > bestArea) { bestArea = area; best = el; }
+    };
+    consider(root);
+    for (const el of window.__ja.deepQueryAll('*', root)) consider(el);
+    return best || root;
   };
 
   // A ref label (e.g. "e1") is only unique going forward if no earlier
@@ -497,12 +551,38 @@ _JS_OUTLINE = r"""
     if (score > bestScore) { bestScore = score; best = items; }
   }
 
+  // Not every row's click target is a real link or even a real <button> --
+  // LinkedIn's own messaging list wraps each row in a plain
+  // `<div tabindex="0">` sized to the whole row, with the only actual
+  // <button> inside being a small "open options" kebab menu. Picking the
+  // first <button> in DOM order (the old fallback) grabbed that kebab
+  // instead of the row -- clicking it opened a dropdown, not the
+  // conversation. Prefer a tabindex/role=button element whose box covers
+  // at least half the row -- a real delegated click target -- over a
+  // small nested control.
+  const rowTarget = (el) => {
+    const link = el.querySelector('a[href]');
+    if (link) return link;
+    const rowArea = (() => {
+      const r = el.getBoundingClientRect();
+      return r.width * r.height;
+    })();
+    let big = null, bigArea = 0;
+    for (const cand of el.querySelectorAll('[tabindex], [role=button]')) {
+      const r = cand.getBoundingClientRect();
+      const area = r.width * r.height;
+      if (area < rowArea * 0.5) continue;
+      if (area > bigArea) { bigArea = area; big = cand; }
+    }
+    return big || el.querySelector('button') || el;
+  };
+
   const rows = [];
   if (best) {
     best.slice(0, limit || 30).forEach((it, n) => {
       const ref = 'i' + (n + 1);
       // Stamp the thing worth clicking, not the wrapper around it.
-      const target = it.el.querySelector('a[href]') || it.el.querySelector('button') || it.el;
+      const target = rowTarget(it.el);
       window.__ja.stamp(target, ref);
       const rec = { ref, text: it.t.slice(0, chars || 120) };
       // The href carries the job id, which is what dedupe runs on — cheaper
@@ -533,6 +613,17 @@ _JS_OUTLINE = r"""
     actions,
     dialog_open: window.__ja.scope() !== document.body,
   };
+}
+"""
+
+_JS_SCROLL_POINT = r"""
+() => {
+  const el = window.__ja.scrollTarget();
+  const r = el.getBoundingClientRect();
+  const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
+  const x = clamp(r.left + r.width / 2, 1, window.innerWidth - 1);
+  const y = clamp(r.top + r.height / 2, 1, window.innerHeight - 1);
+  return [Math.round(x), Math.round(y)];
 }
 """
 
@@ -778,14 +869,28 @@ def click(ref: str | None = None, text: str | None = None, cdp_url=None, tab=Non
         # against a freshly resolved locator, since the first attempt may
         # have been holding a handle the SPA has since replaced.
         attempts = 0
+        force = False
         while True:
             attempts += 1
             try:
-                loc.click()
+                loc.click(force=force)
                 break
             except Exception as e:  # noqa: BLE001 — Playwright's timeout type varies
-                if attempts > 2 or "timeout" not in str(e).lower():
+                msg = str(e).lower()
+                if attempts > 2 or "timeout" not in msg:
                     raise
+                # "<div ...> intercepts pointer events" is a *persistent*
+                # cover, not a transient one — LinkedIn renders some of its
+                # own overlays (e.g. `#interop-outlet`, the messaging panel
+                # and connect-request popups) in an open shadow root that
+                # sits over the page; a browser extension can cause the
+                # same symptom, but it isn't the only source. Either way,
+                # waiting and re-locating won't make it go away, so the next
+                # attempt bypasses Playwright's actionability check and
+                # dispatches the click at the element's own coordinates
+                # regardless of what's layered on top.
+                if "intercepts pointer events" in msg:
+                    force = True
                 page.wait_for_timeout(1200)
                 try:
                     page.wait_for_load_state("domcontentloaded",
@@ -826,6 +931,18 @@ def fill(ref: str, value: str, blur: bool = True, cdp_url=None, tab=None,
     Select, type, blur — never assign to `.value`. Validation runs on blur
     only, so we blur before reporting, and read back what the field actually
     holds rather than trusting what we sent.
+
+    A `\n` in `value` is typed as Shift+Enter, never a bare Enter.
+    Playwright's `.type()` turns a literal "\n" into a real Enter keypress,
+    and LinkedIn's richtext editors — the message compose box chief among
+    them — bind a bare Enter to *submit*, not "new line" (there's a
+    dedicated "Press Enter to send" toggle right next to it). Typing a
+    multi-line body the naive way doesn't just lose the line breaks, it can
+    send a half-written message mid-type. Shift+Enter is the universal
+    "line break, not submit" chord: contenteditable editors honor it, and a
+    plain `<textarea>` inserts a newline on Enter regardless of Shift, so
+    one code path is safe for both without inspecting what `ref` resolved
+    to.
     """
     with session(cdp_url, tab) as (page, _):
         _prime(page)
@@ -836,7 +953,12 @@ def fill(ref: str, value: str, blur: bool = True, cdp_url=None, tab=None,
             loc.press("Control+a")
         except Exception:
             pass
-        loc.type(value, delay=35)
+        lines = value.split("\n")
+        for i, line in enumerate(lines):
+            if line:
+                loc.type(line, delay=35)
+            if i < len(lines) - 1:
+                loc.press("Shift+Enter")
         if blur:
             loc.press("Tab")
             page.wait_for_timeout(300)
@@ -845,14 +967,28 @@ def fill(ref: str, value: str, blur: bool = True, cdp_url=None, tab=None,
             readback = loc.input_value()
         except Exception:
             readback = (loc.get_attribute("value") or "")
+            if not readback:
+                # contenteditable has no `.value` at all -- read what's
+                # actually rendered instead of reporting an empty string
+                # that would make `matches` false for every richtext field.
+                try:
+                    readback = loc.evaluate("el => el.innerText || el.textContent || ''")
+                except Exception:
+                    pass
         res = _eval(page, _JS_FORM, {"limit": MAX_FIELDS})
         field = next((f for f in res["fields"] if f["ref"] == ref), None)
+        # A richtext editor renders each line as its own <p>, and
+        # `innerText` puts a blank line between block elements -- real
+        # content, zero information, but it would make every multi-line
+        # `matches` false. Compare line-by-line with blank lines dropped so
+        # that formatting artifact doesn't masquerade as a content mismatch.
+        non_blank = lambda s: [ln.strip() for ln in s.split("\n") if ln.strip()]
         return {
             "ok": True,
             "ref": ref,
             "typed": value[:MAX_VALUE],
             "value": readback[:MAX_VALUE],
-            "matches": readback.strip() == value.strip(),
+            "matches": non_blank(readback) == non_blank(value),
             "error": (field or {}).get("error", ""),
         }
 
@@ -902,6 +1038,16 @@ def press(key: str, cdp_url=None, tab=None) -> dict:
 
 def scroll(dy: int = 600, cdp_url=None, tab=None) -> dict:
     with session(cdp_url, tab) as (page, _):
+        _prime(page)
+        # Playwright's virtual mouse starts at (0, 0) and a wheel event only
+        # moves whatever element it lands on. LinkedIn almost never scrolls
+        # `window` -- the real scrollbar is on an inner container under a
+        # fixed header -- so a wheel fired at the mouse's default position
+        # usually lands on that header and nothing on the page moves at all.
+        # Move into the actual scrollable region (or the open dialog's own
+        # scrollable area) first.
+        x, y = _eval(page, _JS_SCROLL_POINT)
+        page.mouse.move(x, y)
         page.mouse.wheel(0, dy)
         page.wait_for_timeout(400)
         return {"ok": True, **_state(page)}

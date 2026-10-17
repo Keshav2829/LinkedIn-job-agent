@@ -247,6 +247,18 @@ class TestDb(unittest.TestCase):
             # rejection must not have partially written anything
             self.assertIsNone(db.get_messages(self.con, sid)[seq - 1]["reward"])
 
+    def test_hidden_from_export_messages_are_excluded_only_when_asked(self):
+        sid = db.create_session(self.con, "t", "m", "http://x")
+        db.add_message(self.con, sid, "user", "do it")
+        db.add_message(self.con, sid, "user", "[private note]", tool_name="_private_note",
+                        hidden_from_export=True)
+
+        self.assertEqual(len(db.get_messages(self.con, sid)), 2)
+        self.assertEqual(len(db.get_messages(self.con, sid, include_hidden=True)), 2)
+        visible = db.get_messages(self.con, sid, include_hidden=False)
+        self.assertEqual(len(visible), 1)
+        self.assertEqual(visible[0]["content"], "do it")
+
 
 class TestTools(OrchestratorTestBase):
     def make_ctx(self, cfg=None):
@@ -400,6 +412,31 @@ class TestFinetuneExport(OrchestratorTestBase):
         self.assertEqual(record["messages"][0]["role"], "system")
         self.assertEqual(record["messages"][-1]["role"], "assistant")
 
+    def test_export_excludes_hidden_notes_from_messages_and_validation(self):
+        session_id, _ = self._completed_session(flagged=True)
+        con = db.connect(self.db_path)
+        self.addCleanup(con.close)
+        db.add_message(con, session_id, "user", "the secret hint text", tool_name="_private_note",
+                        hidden_from_export=True)
+
+        out_path = finetune.export_session(con, session_id, Path(self.tmp.name) / "export_out")
+        record = json.loads(out_path.read_text(encoding="utf-8").strip())
+        blob = json.dumps(record["messages"])
+        self.assertNotIn("secret hint", blob)
+        self.assertNotIn("_private_note", blob)
+        # The note (appended here as the trailing row) is filtered out
+        # *before* validate_trajectory's "last row is a real final answer"
+        # check runs -- otherwise this session would wrongly fail structural
+        # validation and get skipped entirely, not just have the note hidden.
+        self.assertEqual(record["messages"][-1]["role"], "assistant")
+
+        out = Path(self.tmp.name) / "all_with_note.jsonl"
+        report = finetune.export_all(con, out, include_all=True)
+        self.assertEqual(report["count"], 1)
+        self.assertEqual(report["skipped_invalid"], [])
+        lines = out.read_text(encoding="utf-8").splitlines()
+        self.assertNotIn("secret hint", lines[0])
+
     def test_export_all_respects_flag_unless_all(self):
         flagged_id, _ = self._completed_session(flagged=True)
         unflagged_id, _ = self._completed_session(flagged=False)
@@ -535,6 +572,390 @@ class TestFinetuneExport(OrchestratorTestBase):
         report = finetune.validate_export_file(out)
         self.assertEqual(report["invalid"], 1)
         self.assertIn("final", report["problems"][0]["errors"][0])
+
+
+class TestToolDatasets(unittest.TestCase):
+    def test_run_shell_subcommand_parsing(self):
+        f = finetune._run_shell_subcommand
+        self.assertEqual(f("python -m jobagent profile get"), "profile get")
+        self.assertEqual(f("python -m jobagent browse find --text foo"), "browse find")
+        self.assertEqual(
+            f('python -m jobagent job seen --job-id 1 && python -m jobagent job seen --job-id 2'),
+            "job seen",
+        )
+        self.assertEqual(f("git status"), "git status")
+        self.assertEqual(f('python -c "import sys; print(1)"'), "python")
+        self.assertEqual(f(""), "?")
+
+    def _fixture_messages(self) -> list[dict]:
+        return [
+            {"role": "system", "content": "sys prompt"},
+            {"role": "user", "content": "do the thing"},
+            {"role": "assistant", "content": "I'll look up the profile.\n" +
+                action({"tool": "run_shell", "input": {"command": "python -m jobagent profile get"}})},
+            {"role": "user", "content": "Observation (run_shell):\n{...}"},
+            {"role": "assistant", "content": "Marking jobs seen.\n" +
+                action({"tool": "run_shell", "input": {
+                    "command": "python -m jobagent job seen --job-id 1 && python -m jobagent job seen --job-id 2"
+                }})},
+            {"role": "user", "content": "Observation (run_shell):\nok"},
+            {"role": "assistant", "content": "What skills exist?\n" +
+                action({"tool": "list_skills", "input": {}})},
+            {"role": "user", "content": "Observation (list_skills):\n- linkedin-apply: ..."},
+            {"role": "assistant", "content": "no action block here, a protocol error"},
+            {"role": "user", "content": "Observation (_protocol):\nERROR: ..."},
+            {"role": "assistant", "content": "Which company?\n" + action({"ask": "which company?"})},
+            {"role": "user", "content": "Acme"},
+            {"role": "assistant", "content": "Done.\n" + action({"final": "applied to Acme"})},
+        ]
+
+    def test_decision_points_skips_unparseable_turns(self):
+        messages = self._fixture_messages()
+        points = finetune._decision_points(messages)
+        # 5 assistant turns have a valid action (2 run_shell, 1 list_skills,
+        # 1 ask, 1 final); the protocol-error turn (index 8) is excluded.
+        self.assertEqual(len(points), 5)
+        self.assertNotIn(8, [i for i, _ in points])
+
+    def test_truncate_context_none_keeps_full_prefix(self):
+        messages = self._fixture_messages()
+        self.assertEqual(finetune._truncate_context(messages, 10, None), messages[:11])
+
+    def test_truncate_context_always_keeps_system_and_task(self):
+        messages = [
+            {"role": "system", "content": "sys " + "x" * 100},
+            {"role": "user", "content": "task " + "y" * 100},
+        ] + [{"role": "user" if i % 2 else "assistant", "content": "z" * 100} for i in range(10)]
+        end = len(messages) - 1
+        # Budget is smaller than even the head alone -- head is kept anyway,
+        # and so is the decision message itself (the mandatory last
+        # element -- it's the training target), but nothing further from
+        # the tail fits.
+        out = finetune._truncate_context(messages, end, max_chars=50)
+        self.assertEqual(out, messages[:2] + [messages[end]])
+
+    def test_truncate_context_fills_backward_from_the_decision_without_splitting_messages(self):
+        messages = [
+            {"role": "system", "content": "s"},
+            {"role": "user", "content": "t"},
+        ] + [{"role": "user" if i % 2 else "assistant", "content": "a" * 100} for i in range(10)]
+        end = len(messages) - 1
+        # Budget for ~3 tail messages (300 chars) plus the tiny head.
+        out = finetune._truncate_context(messages, end, max_chars=302)
+        self.assertEqual(out[:2], messages[:2])
+        self.assertEqual(out[2:], messages[end - 2:end + 1])  # last 3 tail messages, in order
+        self.assertLessEqual(sum(len(m["content"]) for m in out), 302)
+
+    def test_truncate_context_keeps_the_single_message_that_alone_exceeds_budget(self):
+        messages = [
+            {"role": "system", "content": "s"},
+            {"role": "user", "content": "t"},
+            {"role": "assistant", "content": "x" * 10000},  # the decision itself -- far over budget alone
+        ]
+        out = finetune._truncate_context(messages, 2, max_chars=10)
+        self.assertEqual(out, messages)  # kept anyway, not dropped or split
+
+    def test_truncate_context_keeps_last_skill_load_from_the_dropped_middle(self):
+        messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "task"},
+            {"role": "assistant", "content": "Loading skill.\n" +
+                action({"tool": "read_skill", "input": {"name": "linkedin-apply"}})},
+            {"role": "user", "content": "Observation (read_skill):\n# linkedin-apply\nDo the thing."},
+        ] + [{"role": "user" if i % 2 else "assistant", "content": "a" * 100} for i in range(10)]
+        end = len(messages) - 1
+        # Budget only fits the head plus the last ~2 tail messages -- the
+        # skill load (index 2/3) would normally land in the dropped middle.
+        out = finetune._truncate_context(messages, end, max_chars=250)
+        self.assertEqual(out[:2], messages[:2])
+        self.assertEqual(out[2], messages[2])  # read_skill action, recovered
+        self.assertEqual(out[3], messages[3])  # its result, recovered
+        self.assertEqual(out[4:], messages[end - 1:end + 1])  # tight tail window, unaffected
+
+    def test_truncate_context_does_not_duplicate_skill_load_already_in_window(self):
+        messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "task"},
+        ] + [{"role": "user" if i % 2 else "assistant", "content": "a" * 100} for i in range(6)] + [
+            {"role": "assistant", "content": "Loading skill.\n" +
+                action({"tool": "read_skill", "input": {"name": "linkedin-apply"}})},
+            {"role": "user", "content": "Observation (read_skill):\n# linkedin-apply\nDo the thing."},
+        ]
+        end = len(messages) - 1
+        # Budget large enough that the whole tail (including the skill load
+        # itself) already fits in the window -- nothing to recover twice.
+        out = finetune._truncate_context(messages, end, max_chars=100_000)
+        self.assertEqual(out, messages)
+        self.assertEqual(out.count(messages[end - 1]), 1)
+
+    def test_message_len_ignores_image_blocks(self):
+        text_only = {"role": "user", "content": "hello"}
+        with_image = {"role": "user", "content": [
+            {"type": "text", "text": "hello"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64," + "A" * 50000}},
+        ]}
+        self.assertEqual(finetune._message_len(text_only), 5)
+        self.assertEqual(finetune._message_len(with_image), 5)  # the huge image block doesn't count
+
+    def test_derive_tool_use_examples(self):
+        record = {"session_id": "s1", "messages": self._fixture_messages()}
+        examples = finetune.derive_tool_use_examples(record)
+        self.assertEqual(len(examples), 3)  # 2 run_shell + 1 list_skills -- not ask/final
+        self.assertEqual([e["tool"] for e in examples], ["run_shell", "run_shell", "list_skills"])
+        self.assertEqual([e["kind"] for e in examples], ["tool", "tool", "tool"])
+        self.assertEqual(examples[0]["subcommand"], "profile get")
+        self.assertEqual(examples[1]["subcommand"], "job seen")
+        self.assertIsNone(examples[2]["subcommand"])  # list_skills isn't run_shell
+        # Each example's messages is the exact prefix up to and including
+        # that one assistant decision -- nothing after it.
+        self.assertEqual(examples[0]["messages"], record["messages"][:3])
+        self.assertEqual(examples[0]["messages"][-1]["role"], "assistant")
+
+    def test_derive_tool_selection_examples_is_a_superset_including_final_and_ask(self):
+        record = {"session_id": "s1", "messages": self._fixture_messages()}
+        tool_use = finetune.derive_tool_use_examples(record)
+        tool_select = finetune.derive_tool_selection_examples(record)
+        self.assertEqual(len(tool_select), len(tool_use) + 2)  # + ask + final
+        kinds = [e["kind"] for e in tool_select]
+        self.assertEqual(kinds, ["tool", "tool", "tool", "ask", "final"])
+
+    def test_tool_call_errored_detects_error_prefix_and_nonzero_exit_code(self):
+        f = finetune._tool_call_errored
+        # ERROR prefix -- any tool, including run_shell's own pre-flight checks
+        self.assertTrue(f("read_file", {"role": "user", "content": "Observation (read_file):\nERROR: no such file: x"}))
+        self.assertTrue(f("run_shell", {"role": "user", "content": "Observation (run_shell):\nERROR: 'command' is required."}))
+        # run_shell's own signal: a nonzero exit_code, never ERROR-prefixed
+        self.assertTrue(f("run_shell", {"role": "user", "content":
+            "Observation (run_shell):\n$ python -m jobagent job upsert --json '{}'\nexit_code: 2\nstdout:\n{\"ok\":false}"}))
+        self.assertFalse(f("run_shell", {"role": "user", "content":
+            "Observation (run_shell):\n$ python -m jobagent profile get\nexit_code: 0\nstdout:\n{}"}))
+        # exit_code only matters for run_shell -- some other tool's output
+        # that happens to mention "exit_code: 1" in passing isn't an error
+        self.assertFalse(f("read_file", {"role": "user", "content": "Observation (read_file):\nexit_code: 1 is a config value"}))
+        # no following observation, or the next row isn't actually one
+        self.assertFalse(f("run_shell", None))
+        self.assertFalse(f("run_shell", {"role": "assistant", "content": "ERROR: whatever"}))
+
+    def test_derive_tool_use_examples_excludes_errored_tool_calls_by_default(self):
+        messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "do it"},
+            {"role": "assistant", "content": action({"tool": "run_shell", "input": {"command": "python -m jobagent job upsert --json '{}'"}})},
+            {"role": "user", "content": "Observation (run_shell):\n$ python -m jobagent job upsert --json '{}'\nexit_code: 2\nstdout:\n{\"ok\":false,\"error\":\"job_id is required\"}"},
+            {"role": "assistant", "content": action({"tool": "read_file", "input": {"path": "nope"}})},
+            {"role": "user", "content": "Observation (read_file):\nERROR: no such file: nope"},
+            {"role": "assistant", "content": action({"tool": "run_shell", "input": {"command": "python -m jobagent profile get"}})},
+            {"role": "user", "content": "Observation (run_shell):\n$ python -m jobagent profile get\nexit_code: 0\nstdout:\n{}"},
+        ]
+        record = {"session_id": "s1", "messages": messages}
+
+        kept = finetune.derive_tool_use_examples(record)
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(kept[0]["subcommand"], "profile get")
+
+        unfiltered = finetune.derive_tool_use_examples(record, exclude_errors=False)
+        self.assertEqual(len(unfiltered), 3)
+
+    def test_export_tool_datasets_writes_both_files_and_reports_counts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            in_path = tmp / "export.jsonl"
+            record = {"schema": "orchestrator-sft/1", "session_id": "s1",
+                      "messages": self._fixture_messages()}
+            in_path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+            tool_use_out = tmp / "tool_use.jsonl"
+            tool_select_out = tmp / "tool_select.jsonl"
+            report = finetune.export_tool_datasets([in_path], tool_use_out, tool_select_out)
+
+            self.assertEqual(report["tool_use_count"], 3)
+            self.assertEqual(report["tool_use_by_tool"], {"run_shell": 2, "list_skills": 1})
+            self.assertEqual(report["run_shell_by_subcommand"], {"profile get": 1, "job seen": 1})
+            self.assertEqual(report["tool_select_count"], 5)
+            self.assertEqual(report["tool_select_by_kind"], {"tool": 3, "final": 1, "ask": 1})
+            self.assertEqual(report["excluded_error_count"], 0)  # no errored calls in this fixture
+
+            tool_use_lines = [json.loads(l) for l in tool_use_out.read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(len(tool_use_lines), 3)
+            self.assertEqual(tool_use_lines[0]["tool"], "run_shell")
+            tool_select_lines = [json.loads(l) for l in tool_select_out.read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(len(tool_select_lines), 5)
+
+    def test_export_tool_datasets_excludes_errored_calls_and_reports_the_count(self):
+        messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "do it"},
+            {"role": "assistant", "content": action({"tool": "run_shell", "input": {"command": "python -m jobagent job upsert --json '{}'"}})},
+            {"role": "user", "content": "Observation (run_shell):\n$ ...\nexit_code: 2\nstdout:\n{\"ok\":false}"},
+            {"role": "assistant", "content": action({"tool": "run_shell", "input": {"command": "python -m jobagent profile get"}})},
+            {"role": "user", "content": "Observation (run_shell):\n$ ...\nexit_code: 0\nstdout:\n{}"},
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            in_path = tmp / "export.jsonl"
+            in_path.write_text(json.dumps({"session_id": "s1", "messages": messages}) + "\n", encoding="utf-8")
+
+            tool_use_out, tool_select_out = tmp / "tu.jsonl", tmp / "ts.jsonl"
+            report = finetune.export_tool_datasets([in_path], tool_use_out, tool_select_out)
+            self.assertEqual(report["tool_use_count"], 1)
+            self.assertEqual(report["excluded_error_count"], 1)
+
+            report_all = finetune.export_tool_datasets(
+                [in_path], tool_use_out, tool_select_out, exclude_errors=False,
+            )
+            self.assertEqual(report_all["tool_use_count"], 2)
+            self.assertEqual(report_all["excluded_error_count"], 0)
+
+    def _ex(self, tool: str, input_: dict, subcommand=None, kind="tool") -> dict:
+        return {"kind": kind, "tool": tool, "subcommand": subcommand, "input": input_}
+
+    def test_apply_dedup_and_cap_removes_exact_duplicates(self):
+        examples = [
+            self._ex("run_shell", {"command": "a"}, "profile get"),
+            self._ex("run_shell", {"command": "a"}, "profile get"),  # exact repeat
+            self._ex("run_shell", {"command": "b"}, "profile get"),  # different input -- kept
+        ]
+        kept, dups, over_cap = finetune._apply_dedup_and_cap(examples, max_per_key=None, dedup_exact=True)
+        self.assertEqual(len(kept), 2)
+        self.assertEqual(dups, 1)
+        self.assertEqual(over_cap, 0)
+
+        kept_nodedup, dups2, _ = finetune._apply_dedup_and_cap(examples, max_per_key=None, dedup_exact=False)
+        self.assertEqual(len(kept_nodedup), 3)
+        self.assertEqual(dups2, 0)
+
+    def test_apply_dedup_and_cap_enforces_max_per_key(self):
+        examples = [self._ex("run_shell", {"command": f"c{i}"}, "browse find") for i in range(5)]
+        examples.append(self._ex("run_shell", {"command": "x"}, "profile get"))  # different key, untouched
+        examples.append(self._ex("final", None, kind="final"))  # never capped
+
+        kept, _, over_cap = finetune._apply_dedup_and_cap(examples, max_per_key=2, dedup_exact=False)
+        browse_find_kept = [e for e in kept if e.get("subcommand") == "browse find"]
+        self.assertEqual(len(browse_find_kept), 2)
+        self.assertEqual(over_cap, 3)
+        self.assertEqual(len([e for e in kept if e.get("subcommand") == "profile get"]), 1)
+        self.assertTrue(any(e["kind"] == "final" for e in kept))
+
+    def test_export_tool_datasets_dedup_and_cap_stays_consistent_across_both_files(self):
+        messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "do it"}]
+        # 2 exact-duplicate "profile get" calls, 3 distinct "browse find" calls.
+        for cmd in ["python -m jobagent profile get", "python -m jobagent profile get",
+                    "python -m jobagent browse find --text a", "python -m jobagent browse find --text b",
+                    "python -m jobagent browse find --text c"]:
+            messages.append({"role": "assistant",
+                              "content": action({"tool": "run_shell", "input": {"command": cmd}})})
+            messages.append({"role": "user", "content": "Observation (run_shell):\nexit_code: 0\nstdout:\n{}"})
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            in_path = tmp / "export.jsonl"
+            in_path.write_text(json.dumps({"session_id": "s1", "messages": messages}) + "\n", encoding="utf-8")
+            tool_use_out, tool_select_out = tmp / "tu.jsonl", tmp / "ts.jsonl"
+
+            report = finetune.export_tool_datasets(
+                [in_path], tool_use_out, tool_select_out, max_per_key=2,
+            )
+            self.assertEqual(report["excluded_duplicate_count"], 1)  # the 2nd "profile get"
+            self.assertEqual(report["excluded_over_cap_count"], 1)  # the 3rd "browse find"
+            self.assertEqual(report["tool_use_count"], 3)  # 1 profile get + 2 browse find
+            self.assertEqual(report["run_shell_by_subcommand"], {"profile get": 1, "browse find": 2})
+
+            tool_use_lines = [json.loads(l) for l in tool_use_out.read_text(encoding="utf-8").splitlines()]
+            tool_select_lines = [json.loads(l) for l in tool_select_out.read_text(encoding="utf-8").splitlines()]
+            # tool_select's "tool"-kind rows must be the exact same surviving
+            # calls as tool_use -- the two files must never disagree.
+            self.assertEqual(
+                [l["input"] for l in tool_use_lines],
+                [l["input"] for l in tool_select_lines if l["kind"] == "tool"],
+            )
+
+    def test_export_tool_datasets_strip_metadata_writes_bare_messages_plus_sidecar(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            in_path = tmp / "export.jsonl"
+            record = {"schema": "orchestrator-sft/1", "session_id": "s1",
+                      "messages": self._fixture_messages()}
+            in_path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+            tool_use_out = tmp / "tool_use.jsonl"
+            tool_select_out = tmp / "tool_select.jsonl"
+            finetune.export_tool_datasets([in_path], tool_use_out, tool_select_out, strip_metadata=True)
+
+            first_line = json.loads(tool_use_out.read_text(encoding="utf-8").splitlines()[0])
+            self.assertEqual(list(first_line.keys()), ["messages"])
+            meta_path = tool_use_out.with_name(tool_use_out.name + ".meta.jsonl")
+            self.assertTrue(meta_path.exists())
+            meta = json.loads(meta_path.read_text(encoding="utf-8").splitlines()[0])
+            self.assertEqual(meta["tool"], "run_shell")
+            self.assertEqual(meta["subcommand"], "profile get")
+
+    def test_export_tool_datasets_val_frac_splits_by_session_without_leakage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            in_path = tmp / "export.jsonl"
+            # 6 distinct sessions, each with its own set of decision points --
+            # a leaking split would put the same session_id on both sides.
+            lines = [
+                json.dumps({"session_id": f"s{i}", "messages": self._fixture_messages()})
+                for i in range(6)
+            ]
+            in_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+            tool_use_out = tmp / "tool_use.jsonl"
+            tool_select_out = tmp / "tool_select.jsonl"
+            # dedup_exact=False: every session here reuses the identical
+            # fixture verbatim (same tool+input every time), which real
+            # corpus-wide dedup would collapse to one survivor across all
+            # 6 -- that's dedup's own, separately-tested behavior,
+            # orthogonal to what this test checks (the split itself).
+            report = finetune.export_tool_datasets(
+                [in_path], tool_use_out, tool_select_out, val_frac=0.3, dedup_exact=False,
+            )
+
+            self.assertGreater(report["val_tool_use_count"], 0)
+            self.assertGreater(report["val_tool_select_count"], 0)
+            self.assertEqual(
+                report["tool_use_count"] + report["val_tool_use_count"], 3 * 6,
+            )
+            self.assertEqual(
+                report["tool_select_count"] + report["val_tool_select_count"], 5 * 6,
+            )
+
+            val_tool_use_path = Path(report["val_tool_use_path"])
+            val_tool_select_path = Path(report["val_tool_select_path"])
+            self.assertEqual(val_tool_use_path.name, "tool_use.val.jsonl")
+            self.assertEqual(val_tool_select_path.name, "tool_select.val.jsonl")
+
+            train_sessions = {
+                json.loads(l)["session_id"] for l in tool_use_out.read_text(encoding="utf-8").splitlines()
+            }
+            val_sessions = {
+                json.loads(l)["session_id"] for l in val_tool_use_path.read_text(encoding="utf-8").splitlines()
+            }
+            self.assertEqual(train_sessions & val_sessions, set())
+
+            # tool_select's val file must agree with tool_use's val file on
+            # which sessions it holds -- same requirement as the train pair.
+            val_select_sessions = {
+                json.loads(l)["session_id"]
+                for l in val_tool_select_path.read_text(encoding="utf-8").splitlines()
+            }
+            self.assertEqual(val_sessions, val_select_sessions)
+
+    def test_export_tool_datasets_val_frac_zero_omits_val_fields(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            in_path = tmp / "export.jsonl"
+            record = {"session_id": "s1", "messages": self._fixture_messages()}
+            in_path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+            report = finetune.export_tool_datasets(
+                [in_path], tmp / "tool_use.jsonl", tmp / "tool_select.jsonl",
+            )
+            self.assertIsNone(report["val_tool_use_path"])
+            self.assertIsNone(report["val_tool_select_path"])
+            self.assertEqual(report["val_tool_use_count"], 0)
+            self.assertEqual(report["val_tool_select_count"], 0)
 
 
 class TestImport(OrchestratorTestBase):
@@ -1509,6 +1930,112 @@ class TestAskProtocol(OrchestratorTestBase):
         self.assertEqual(session["summary"], "done")
         self.assertEqual(state["calls"], 2)
 
+    def test_inject_note_rejects_a_non_allowed_status(self):
+        cfg = self.make_config("http://unused/v1", interactive=True)
+        con = db.connect(self.db_path)
+        self.addCleanup(con.close)
+        session_id = db.create_session(con, "t", "m", cfg.base_url, interactive=True)
+        db.set_status(con, session_id, "waiting_for_user")
+        with self.assertRaises(ValueError):
+            agent.inject_note(cfg, session_id, "nope")
+
+        db.end_session(con, session_id, "completed", summary="done")
+        with self.assertRaises(ValueError):
+            agent.inject_note(cfg, session_id, "nope")
+
+    def test_inject_note_accepts_running_and_each_retryable_status(self):
+        cfg = self.make_config("http://unused/v1")
+        con = db.connect(self.db_path)
+        self.addCleanup(con.close)
+        for status in ("running", "failed", "aborted", "stopped"):
+            session_id = db.create_session(con, "t", "m", cfg.base_url)
+            if status != "running":
+                db.end_session(con, session_id, status, error="whatever")
+            agent.inject_note(cfg, session_id, f"note for {status}")
+            rows = db.get_messages(con, session_id)
+            note_rows = [r for r in rows if r["tool_name"] == "_private_note"]
+            self.assertEqual(len(note_rows), 1)
+            self.assertIn(f"note for {status}", note_rows[0]["content"])
+            self.assertEqual(note_rows[0]["hidden_from_export"], 1)
+            self.assertEqual(note_rows[0]["role"], "user")
+
+    def test_inject_note_reaches_the_model_on_the_very_next_step(self):
+        """A note added mid-run doesn't pause/resume anything -- drive_session
+        rereads the transcript fresh every step -- so it must be present in
+        the very next client.chat() call, and absent from the one before."""
+        received: list[dict] = []
+        session_holder: dict[str, str] = {}
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, fmt, *args):
+                pass
+
+            def do_POST(self):
+                n = int(self.headers.get("Content-Length") or 0)
+                body = json.loads(self.rfile.read(n))
+                received.append(body)
+                if len(received) == 1:
+                    agent.inject_note(cfg, session_holder["id"], "actually just call memory list")
+                    content = action({"tool": "memory", "input": {"action": "list"}})
+                else:
+                    content = action({"final": "done"})
+                resp = json.dumps({"choices": [{"message": {"content": content}}]}).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(resp)))
+                self.end_headers()
+                self.wfile.write(resp)
+
+        server = HTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(stop_server, server)
+        port = server.server_address[1]
+
+        cfg = self.make_config(f"http://127.0.0.1:{port}/v1")
+        session_id = agent.start_session(cfg, "do the thing")
+        session_holder["id"] = session_id
+        agent.drive_session(cfg, session_id)
+
+        self.assertEqual(len(received), 2)
+        self.assertNotIn("actually just call memory list", json.dumps(received[0]["messages"]))
+        self.assertIn("actually just call memory list", json.dumps(received[1]["messages"]))
+
+        con = db.connect(self.db_path)
+        self.addCleanup(con.close)
+        self.assertEqual(db.get_session(con, session_id)["status"], "completed")
+
+    def test_stop_note_retry_sequence_delivers_the_note_on_resume(self):
+        """The workflow the note feature exists for: a drifting session gets
+        stopped, a note is attached while it's `stopped`, then retried -- the
+        note must already be in the transcript the resumed loop rereads."""
+        server, state = make_stub_server([
+            action({"tool": "memory", "input": {"action": "list"}}),
+            action({"final": "done"}),
+        ])
+        self.addCleanup(stop_server, server)
+        port = server.server_address[1]
+        cfg = self.make_config(f"http://127.0.0.1:{port}/v1")
+        session_id = agent.start_session(cfg, "do the thing")
+
+        con = db.connect(self.db_path)
+        self.addCleanup(con.close)
+        db.request_stop(con, session_id)  # stop before the very first step
+        agent.drive_session(cfg, session_id)
+        self.assertEqual(db.get_session(con, session_id)["status"], "stopped")
+
+        agent.inject_note(cfg, session_id, "try the memory tool first")
+        agent.retry_session(cfg, session_id)
+        self.assertEqual(db.get_session(con, session_id)["status"], "running")
+
+        messages_before_resume = db.to_api_messages(db.get_messages(con, session_id))
+        self.assertIn("try the memory tool first", json.dumps(messages_before_resume))
+
+        agent.drive_session(cfg, session_id)
+        session = db.get_session(con, session_id)
+        self.assertEqual(session["status"], "completed")
+        self.assertEqual(state["calls"], 2)
+
     def test_drive_interactively_with_on_ask_completes_in_one_call(self):
         server, state = make_stub_server([
             action({"ask": "which company should I target?"}),
@@ -1984,6 +2511,64 @@ class TestUI(OrchestratorTestBase):
                 break
             time.sleep(0.05)
         self.assertEqual(db.get_session(con, session_id)["status"], "stopped")
+
+    def test_note_endpoint_404s_for_unknown_session(self):
+        base = self.start_ui(self.make_config("http://unused/v1"))
+        try:
+            self._post(f"{base}/api/sessions/deadbeef/note", {"text": "hi"})
+            self.fail("expected an HTTPError")
+        except urllib.error.HTTPError as e:
+            self.assertEqual(e.code, 404)
+
+    def test_note_endpoint_409s_for_waiting_for_user_session(self):
+        cfg = self.make_config("http://unused/v1", interactive=True)
+        con = db.connect(self.db_path)
+        self.addCleanup(con.close)
+        session_id = db.create_session(con, "t", "m", cfg.base_url, interactive=True)
+        db.set_status(con, session_id, "waiting_for_user")
+        base = self.start_ui(cfg)
+        try:
+            self._post(f"{base}/api/sessions/{session_id}/note", {"text": "hi"})
+            self.fail("expected an HTTPError")
+        except urllib.error.HTTPError as e:
+            self.assertEqual(e.code, 409)
+
+    def test_note_endpoint_appends_a_hidden_row_for_a_running_session(self):
+        cfg = self.make_config("http://unused/v1")
+        con = db.connect(self.db_path)
+        self.addCleanup(con.close)
+        session_id = db.create_session(con, "t", "m", cfg.base_url)  # defaults to status 'running'
+        db.add_message(con, session_id, "system", "sys")
+        db.add_message(con, session_id, "user", "t")
+
+        base = self.start_ui(cfg)
+        res = self._post(f"{base}/api/sessions/{session_id}/note", {"text": "steer it"})
+        self.assertTrue(res["ok"])
+
+        rows = db.get_messages(con, session_id)
+        note_rows = [r for r in rows if r["tool_name"] == "_private_note"]
+        self.assertEqual(len(note_rows), 1)
+        self.assertIn("steer it", note_rows[0]["content"])
+        self.assertEqual(note_rows[0]["hidden_from_export"], 1)
+
+    def test_note_endpoint_accepts_a_stopped_session_before_retry(self):
+        server, state = make_stub_server([action({"final": "ok"})])
+        self.addCleanup(stop_server, server)
+        port = server.server_address[1]
+        cfg = self.make_config(f"http://127.0.0.1:{port}/v1")
+        session_id = agent.start_session(cfg, "t")
+
+        con = db.connect(self.db_path)
+        self.addCleanup(con.close)
+        db.request_stop(con, session_id)
+        agent.drive_session(cfg, session_id)
+        self.assertEqual(db.get_session(con, session_id)["status"], "stopped")
+
+        base = self.start_ui(cfg)
+        res = self._post(f"{base}/api/sessions/{session_id}/note", {"text": "do it differently"})
+        self.assertTrue(res["ok"])
+        rows = db.get_messages(con, session_id)
+        self.assertTrue(any(r["tool_name"] == "_private_note" for r in rows))
 
     def test_retry_endpoint_accepts_a_stopped_session(self):
         server, state = make_stub_server([

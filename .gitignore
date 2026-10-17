@@ -4,6 +4,9 @@ data/
 *.db-wal
 *.db-shm
 
+# orchestrator/'s local endpoint override (may carry a real API key/URL)
+orchestrator/config.json
+
 # Resumes
 *.pdf
 *.docx

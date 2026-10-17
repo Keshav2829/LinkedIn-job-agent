@@ -170,6 +170,7 @@ python -m orchestrator ui [--port 8787] [--no-browser] [--vision] [--interactive
 
 python -m orchestrator finetune export --out FILE [--all] [--status S ...] [--any-status] [--val-frac F] [--strip-metadata] [--require-review] [--min-reward N]
 python -m orchestrator finetune validate FILE
+python -m orchestrator finetune export-tool-data --in FILE [--in FILE ...] [--tool-use-out FILE] [--tool-select-out FILE] [--strip-metadata] [--include-errors] [--max-per-key N] [--no-dedup] [--val-frac F] [--max-context-chars N]
 
 python -m orchestrator config show
 
@@ -284,6 +285,130 @@ negative-example signal, and `validate_trajectory` already catches
 anything structurally broken. What that doesn't catch is *quality* — a
 session can be perfectly well-formed and still not be something you'd
 want to train on. See "Reviewing sessions" below for that.
+
+## Tool-use / tool-selection datasets
+
+Before fine-tuning on full multi-turn trajectories, it's often useful to
+train on two smaller, more focused datasets first, both derived from one
+or more already-exported `orchestrator-sft/1` JSONL files (the output of
+`finetune export` above — this is a pure file transform, no DB involved,
+so it works on any export file, including one from another machine):
+
+```bash
+python -m orchestrator finetune export-tool-data --in orchestrator/data/finetune/export.jsonl
+python -m orchestrator finetune export-tool-data --in a.jsonl --in b.jsonl --strip-metadata
+```
+
+This reads every session record in the given file(s), finds each point
+where the model made a real decision (a tool call, a `final`, or an
+`ask`), and slices the trajectory there — the example's `messages` is the
+exact prefix up through and including that one decision, nothing after
+it. Two files are written:
+
+- **`tool_use.jsonl`** (`orchestrator-tool-use/1`) — one example per real
+  tool call (`list_skills`/`read_skill`/`read_file`/`run_shell`/`memory`/
+  `screenshot`), for teaching correct per-tool call syntax.
+- **`tool_select.jsonl`** (`orchestrator-tool-select/1`) — every decision
+  point, a strict superset of `tool_use.jsonl` that also includes `final`/
+  `ask`, for teaching the broader choice of what to do next — including
+  when *not* to call a tool.
+
+Both datasets use the exact same target format as the full-trajectory
+export — the real ` ```action ` fence, the tool's actual input, not a
+reduced label — deliberately, so a model never has to learn two different
+output formats across training stages. Each record also carries `kind`
+(`tool`/`final`/`ask`) and `tool`, so later scoring ("was the right tool
+called, with the right input") doesn't need to re-parse the action block.
+
+`run_shell` is a generic passthrough to the `jobagent` CLI, so by tool
+name alone it hides everything it was actually asked to do — on a real
+export this was 87% of all tool calls. The printed report's
+`run_shell_by_subcommand` breaks it down by the actual command (`"browse
+find"`, `"profile get"`, `"company get"`, ...), parsed from the `command`
+input (first command only, if it's a `&&`-chained line) — this is the
+place to check real per-action coverage, not the top-level `by_tool`
+counts, and coverage here can be (and often is) very uneven: on the
+sample file `browse find`/`browse click` each appear 50+ times while
+`profile get` appears 3 times and `config get` once.
+
+A tool call whose own observation shows it failed — an invalid command or
+invalid input argument — is dropped by default, for both files: it isn't
+legitimate "how to call this tool" material. Two things count as failed:
+the orchestrator's own `"ERROR: ..."` observation convention (an unknown
+tool, bad/missing input, a `run_shell` command rejected by the allowlist),
+and, specifically for `run_shell`, a nonzero `exit_code` in its
+observation — the underlying `jobagent`/`git` command itself failing
+(a missing required argument, a bad job id, a Playwright locator error, a
+timeout). The second case matters on its own: unlike every other tool,
+`tool_run_shell` never prefixes a failed command's output with `"ERROR"`
+— it just reports `exit_code`/`stdout`/`stderr` either way (see
+`tools.tool_run_shell`), so an `"ERROR"`-only check would silently miss
+it. Pass `--include-errors` to keep these in instead (e.g. to build a
+separate negative/error-recovery dataset later); the printed report's
+`excluded_error_count` says how many were dropped either way.
+
+With only a handful of sessions exported so far, the surviving tool calls
+are also far from evenly spread — a few common actions (`browse find`,
+`job upsert`, ...) can dominate, and the exact same call sometimes repeats
+verbatim (e.g. `list_skills`'s input is always `{}`, so every call after
+the first teaches nothing new). Two more filters, applied once across
+every `--in` file so `tool_use.jsonl` and `tool_select.jsonl` always agree
+on which calls survived:
+
+- **Exact-duplicate removal** (on by default) — drops a tool call whose
+  `(tool, input)` is byte-for-byte identical to one already kept. Pass
+  `--no-dedup` to keep repeats.
+- **`--max-per-key N`** (off by default) — once a key — a `run_shell`
+  subcommand, or a plain tool name for everything else — has contributed
+  N examples, the rest of that key are dropped. This is the main lever
+  for the imbalance itself (`run_shell_by_subcommand` showing `browse
+  find: 78` next to `profile get: 3`, say): it won't invent missing
+  coverage, but it stops the common actions from drowning out the rare
+  ones while more sessions are still being collected.
+
+Neither catches a *near*-duplicate with slightly different wording (e.g.
+the same job re-upserted with a trivially reworded description) — only a
+literal repeat, or the per-key count, are checked; there's no fuzzy
+similarity matching here. The printed report's `excluded_duplicate_count`
+and `excluded_over_cap_count` say how many were dropped by each.
+
+`--val-frac` (default 0, single file) writes a validation split too,
+grouped by `session_id` — the same leakage concern `finetune export`'s
+own `--val-frac` avoids by grouping on task, just one level down, since a
+tool-use/tool-select record only carries `session_id`, not the session's
+task string. Every decision point from one session lands entirely on one
+side of the split. Train goes to `--tool-use-out`/`--tool-select-out`; val
+goes to the same path with `.val` inserted before the suffix
+(`tool_use.jsonl` -> `tool_use.val.jsonl`):
+
+```bash
+python -m orchestrator finetune export-tool-data --in orchestrator/data/finetune/export.jsonl --val-frac 0.15
+```
+
+Each example's `messages` is normally the trajectory's *entire* prefix up
+through that one decision — faithful, but some orchestrator sessions run
+to 100+ turns, so a late decision's example carries the whole history.
+Measured on a real export: median ~29k tokens, max ~66k (rough 4
+chars/token estimate) — far past what a free-tier GPU can fine-tune on.
+`--max-context-chars N` truncates each example instead of shipping it
+whole: it always keeps the system prompt, the original task, and the
+decision turn itself (the training target — never the thing that gets
+cut), then fills backward with as many of the most recent whole messages
+as fit in `N` characters, same tradeoff a sliding context window makes at
+real inference time. This can leave a gap between the kept head and the
+kept recent turns — the *middle* of a long session is what's dropped, not
+the parts that matter most for "given recent context, what do I do
+next". One more thing always survives that cut regardless of budget: the
+most recent `read_skill` call and its result, if one happened earlier in
+the session. A skill load changes what the model is supposed to be doing
+for the rest of the task, not just how it got there, so if it landed in
+the dropped middle it's spliced back in right after the head — otherwise
+a later decision in the kept tail would look unmotivated against
+instructions the example no longer shows:
+
+```bash
+python -m orchestrator finetune export-tool-data --in orchestrator/data/finetune/export.jsonl --max-context-chars 24000
+```
 
 ## Reviewing sessions
 
@@ -615,7 +740,8 @@ orchestrator/
   llm.py              minimal OpenAI-compatible chat client (urllib only)
   tools.py            the tool surface + run_shell allowlist
   agent.py            the loop: system prompt, action parsing, dispatch
-  finetune.py         session transcript -> JSONL export
+  finetune.py         session transcript -> JSONL export; also derives the
+                      tool-use/tool-selection datasets from an export file
   ui.py               stdlib http.server UI backend
   ui_page.html         the UI itself (vanilla HTML/CSS/JS, no build step)
   config.example.json  documents the config.json shape (config.json itself is gitignored)

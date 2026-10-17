@@ -64,6 +64,9 @@ python -m jobagent outreach draft --contact-url <url> --kind hr_pitch --job-id 4
 Then approval (`outreach pending` → user) and send (`outreach next` →
 browser-playbook §5). **Attach the resume** on `hr_pitch` and `referral_ask` —
 verify the attachment chip shows the right filename before clicking Send.
+The drafted body has real line breaks; typing it via `browse fill --value` on
+the CLI means writing those as a literal `\n` inside the quoted string, not
+an actual newline — see browser-playbook §5, "Writing a multi-line body".
 
 A referral ask carries the other person's name and reputation. Say so in one
 short line — "no pressure at all if you'd rather not" — and mean it. Never send

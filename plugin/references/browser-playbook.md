@@ -86,13 +86,16 @@ Engineer Jobs` — is LinkedIn's unread-notification badge, not a result count.
 Read the "N results" element in the page body instead.
 
 **Getting past the first page.** The results pane is a nested scroll
-container, not the page — `browse scroll` wheels whatever the mouse happens
-to be over, which is not reliably that pane, so it's an unreliable way to
-load more cards. `start=N` is not: it's a real navigation, so `browse open`
-on the same search URL with `start` incremented by 25 lands on a fresh page
-that `browse outline` / `browse find` / `browse text` read exactly like the
-first one. Prefer it over scrolling. See linkedin-apply's search step for how
-many pages to pull per search.
+container, not the page — `browse scroll` now aims at the real scrollable
+region instead of wherever the mouse happens to be, so it does move the
+pane, but it's still a lazy-load trigger: how many cards appear depends on
+render timing, and a list that's mid-fetch when the next tool call runs
+reads short. `start=N` is a real navigation instead, so `browse open` on the
+same search URL with `start` incremented by 25 lands on a fresh page that
+`browse outline` / `browse find` / `browse text` read exactly like the
+first one — deterministic where a scroll-triggered load isn't. Prefer it
+over scrolling. See linkedin-apply's search step for how many pages to pull
+per search.
 
 Individual posting: `https://www.linkedin.com/jobs/view/{jobId}/`
 In the search list the selected card sets `?currentJobId={jobId}` — that value
@@ -305,6 +308,33 @@ case.
 
 Only 1st-degree connections can be messaged for free. For a 2nd-degree contact
 with no InMail credits, the invite note *is* the message — keep it to 280 chars.
+
+### Writing a multi-line body
+
+The message box is a richtext editor, not a plain textarea, and it binds a
+bare Enter to **send** (there's a "Press Enter to send" toggle next to it) —
+Shift+Enter is "new line". `browse fill` already knows this: it types each
+line and sends Shift+Enter between them, so the body lands as real line
+breaks and never submits early.
+
+The part that's still on you is getting an actual line break into the
+`--value` argument in the first place. No shell — bash, PowerShell, cmd —
+turns a `\n` typed inside a quoted argument into a real newline; all of them
+hand it to the process as the two literal characters `\` and `n`. Writing
+`--value "Hi John,\n\nThanks for connecting."` is the natural way to type a
+multi-line body on one command line, so `browse fill` decodes a literal `\n`
+(and `\r\n`) into a real line break before typing it:
+
+```
+jobagent browse fill --ref f3 --value "Hi John,\n\nThanks for connecting. I saw the opening for a Senior AI Engineer and would love to chat.\n\nBest,\nKeshav"
+```
+
+An argument that already contains a genuine embedded newline (e.g. pasted
+multi-line text) works too and passes through untouched — there's no
+backslash in it for the decode to match. Either way, read back `matches` in
+`browse fill`'s own response rather than trusting the command exited `0`:
+`true` means the body round-tripped line-for-line; `false` means it didn't
+and the box needs a look before Send.
 
 ---
 

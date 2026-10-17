@@ -66,12 +66,12 @@
     border-radius: 4px; padding: 1px 6px; font-size: 10px; line-height: 1.6;
   }
   .stop-btn:hover { background: #3a2222; border-color: var(--bad); color: var(--bad); }
-  #answerBox, #retryBox { padding: 12px 18px; border-top: 1px solid var(--border); display: flex; align-items: center; gap: 8px; }
-  #answerBox #answerInput, #answerBox #answerApiKey, #retryBox #retryApiKey {
+  #answerBox, #retryBox, #noteBox { padding: 12px 18px; border-top: 1px solid var(--border); display: flex; align-items: center; gap: 8px; }
+  #answerBox #answerInput, #answerBox #answerApiKey, #retryBox #retryApiKey, #noteBox #noteInput {
     background: var(--panel); color: var(--text); border: 1px solid var(--border);
     border-radius: 6px; padding: 8px; font: inherit;
   }
-  #answerBox #answerInput { flex: 1; }
+  #answerBox #answerInput, #noteBox #noteInput { flex: 1; }
   #retryBox span { color: var(--bad); overflow: hidden; text-overflow: ellipsis; }
   #retryBox span.stopped-note { color: var(--muted); }
   header.top {
@@ -91,6 +91,7 @@
   .msg.user { background: #1c2330; align-self: flex-end; }
   .msg.assistant { background: var(--panel); border: 1px solid var(--border); align-self: flex-start; }
   .msg.tool { background: #14201a; border: 1px solid #234; align-self: flex-start; font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+  .msg.note { background: #2a2410; border: 1px dashed #665c20; align-self: flex-end; }
   #empty { color: var(--muted); padding: 24px; }
   .footer-bar { padding: 8px 18px; border-top: 1px solid var(--border); font-size: 12px; color: var(--muted); display: flex; justify-content: space-between; }
   .review-badge { padding: 1px 6px; border-radius: 10px; font-size: 10px; white-space: nowrap; }
@@ -264,7 +265,7 @@ function renderTranscript(session, messages) {
   el.innerHTML = "";
   for (const m of messages) {
     const div = document.createElement("div");
-    div.className = "msg " + roleClass(m.role);
+    div.className = "msg " + (m.tool_name === "_private_note" ? "note" : roleClass(m.role));
     const label = m.tool_name ? `${m.role} (${m.tool_name})` : m.role;
     let html = `<div class="role">${escapeHtml(label)}</div>${escapeHtml(m.content)}`;
     if (m.image_path) {
@@ -282,7 +283,47 @@ function renderTranscript(session, messages) {
   footer.textContent = extra;
   document.getElementById("stopBtn").style.display = session.status === "running" ? "" : "none";
   renderAnswerBox(session);
+  renderNoteBox(session);
   renderRetryBox(session);
+}
+
+function renderNoteBox(session) {
+  const showable = session.status === "running" ||
+                    ["failed", "aborted", "stopped"].includes(session.status);
+  const existing = document.getElementById("noteBox");
+  if (!showable) {
+    if (existing) existing.remove();
+    return;
+  }
+  // While running, selectSession's poll loop calls renderTranscript every
+  // 1.5s -- rebuilding this box each time would wipe out an in-progress
+  // keystroke. The other three states are only reached after polling has
+  // already stopped (same as retryBox), so no guard is needed there.
+  if (session.status === "running" && existing) return;
+  if (existing) existing.remove();
+  const box = document.createElement("div");
+  box.id = "noteBox";
+  box.innerHTML = `
+    <input id="noteInput" placeholder="Private note to steer the agent (hidden from fine-tune export)…">
+    <button id="noteBtn">Send</button>`;
+  document.querySelector("main").insertBefore(box, document.getElementById("footerBar"));
+  const send = async () => {
+    const val = document.getElementById("noteInput").value.trim();
+    if (!val) return;
+    const btn = document.getElementById("noteBtn");
+    btn.disabled = true;
+    try {
+      const res = await jpost(`/api/sessions/${session.id}/note`, { text: val });
+      if (res.error) { alert(res.error); return; }
+      document.getElementById("noteInput").value = "";
+    } finally {
+      btn.disabled = false;
+    }
+  };
+  document.getElementById("noteBtn").onclick = send;
+  document.getElementById("noteInput").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") send();
+  });
 }
 
 function renderRetryBox(session) {

@@ -232,6 +232,19 @@ MIGRATIONS: list[str] = [
     """
     ALTER TABLE sessions ADD COLUMN heartbeat_at TEXT;
     """,
+    # --- 11: private steering notes ---------------------------------------
+    # A note the operator injects mid-session (or on a failed/aborted/
+    # stopped session, before a retry) to nudge a drifting model back on
+    # track -- see agent.inject_note. It's a plain `user` row like any
+    # other (the model needs to actually read it), but flagged here so
+    # `finetune.py`'s export path can leave it out: `get_messages(...,
+    # include_hidden=False)` filters on this column. Nothing else -- the
+    # live replay to the model, the UI transcript, `sessions show` -- ever
+    # passes include_hidden=False, so a note is invisible only to the one
+    # place it needs to be.
+    """
+    ALTER TABLE messages ADD COLUMN hidden_from_export INTEGER NOT NULL DEFAULT 0;
+    """,
 ]
 
 REWARD_LABELS = {-2: "unusable", -1: "bad", 0: "neutral", 1: "good", 2: "exemplary"}
@@ -453,6 +466,7 @@ def add_message(
     tool_name: str | None = None,
     tool_input: str | None = None,
     image_path: str | None = None,
+    hidden_from_export: bool = False,
 ) -> int:
     row = con.execute(
         "SELECT COALESCE(MAX(seq), 0) + 1 AS n FROM messages WHERE session_id=?",
@@ -460,18 +474,22 @@ def add_message(
     ).fetchone()
     seq = row["n"]
     con.execute(
-        "INSERT INTO messages (session_id, seq, role, content, tool_name, tool_input, image_path, created_at) "
-        "VALUES (?,?,?,?,?,?,?,?)",
-        (session_id, seq, role, content, tool_name, tool_input, image_path, utcnow()),
+        "INSERT INTO messages (session_id, seq, role, content, tool_name, tool_input, image_path, "
+        "hidden_from_export, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+        (session_id, seq, role, content, tool_name, tool_input, image_path,
+         1 if hidden_from_export else 0, utcnow()),
     )
     con.commit()
     return seq
 
 
-def get_messages(con: sqlite3.Connection, session_id: str) -> list[dict[str, Any]]:
-    rows = con.execute(
-        "SELECT * FROM messages WHERE session_id=? ORDER BY seq ASC", (session_id,)
-    ).fetchall()
+def get_messages(
+    con: sqlite3.Connection, session_id: str, include_hidden: bool = True,
+) -> list[dict[str, Any]]:
+    query = "SELECT * FROM messages WHERE session_id=?"
+    if not include_hidden:
+        query += " AND hidden_from_export=0"
+    rows = con.execute(query + " ORDER BY seq ASC", (session_id,)).fetchall()
     return [dict(r) for r in rows]
 
 

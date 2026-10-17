@@ -220,6 +220,32 @@ def make_handler(cfg: Config):
                 agent.request_stop(cfg, session_id)
                 return self._json({"ok": True})
 
+            m = re.fullmatch(r"/api/sessions/([a-fA-F0-9]+)/note", path)
+            if m:
+                session_id = m.group(1)
+                data = self._body()
+                text = str(data.get("text", "")).strip()
+                if not text:
+                    return self._json({"error": "text is required"}, 400)
+                con = db.connect(cfg.db_path)
+                try:
+                    session = db.get_session(con, session_id)
+                finally:
+                    con.close()
+                if session is None:
+                    return self._json({"error": "no such session"}, 404)
+                if session["status"] not in agent.NOTE_ALLOWED_STATUSES:
+                    return self._json(
+                        {"error": f"session can't take a note right now (status: {session['status']})"}, 409
+                    )
+                # No background thread here either -- same reasoning as
+                # /stop: `running` means a loop is already driving the
+                # session and will pick the note up on its next step;
+                # failed/aborted/stopped just need the note sitting in the
+                # transcript before a later `sessions retry` call.
+                agent.inject_note(cfg, session_id, text)
+                return self._json({"ok": True})
+
             m = re.fullmatch(r"/api/sessions/([a-fA-F0-9]+)/retry", path)
             if m:
                 session_id = m.group(1)

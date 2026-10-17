@@ -143,6 +143,37 @@ The response tells you what to do:
 Store the description you read — it is what makes the outreach personal later,
 and re-fetching it costs another page load.
 
+**Company-level conditions need verification, not memory.** If `prefs` sets
+`company_kind` or `min_headcount`/`max_headcount`, or the task itself names
+any other company-level condition ("product companies only", "at least 500
+employees", "no staffing agencies") — do not fill `company_headcount` /
+`company_kind` / `industry` in `job upsert` from what you already believe
+about the company. This includes companies you're confident you already
+know — a well-known name is not a source, and scoring in `matching.py`
+already treats an *omitted* field as neutral (`kind: unknown` scores the
+same as a match; a missing headcount still gets partial credit), precisely
+so you are never pressured to guess instead of leaving it out. Before
+scoring a job with a company-level condition in play:
+
+1. `python -m jobagent company get --name "<company>"` first — if it's
+   already stored with the field you need, use that and log it as a
+   `retrieval` entry (`source: "company.get"`) instead of re-checking.
+2. If not, open the company's LinkedIn page and check:
+   - **About** — usually states company size directly (e.g.
+     "1,001-5,000 employees") and an industry/specialty description you can
+     read company type from.
+   - **People** — LinkedIn's own "X,XXX employees on LinkedIn" count, when
+     About doesn't give a range; the visible role mix there (engineering/
+     product-heavy vs. consulting/client-facing) is a legitimate signal for
+     product-vs-service, but it's an *inference* from what you saw, not a
+     stated fact — log it as such.
+3. Only then pass `company_headcount` / `company_kind` / `industry` to
+   `python -m jobagent company upsert --name "<company>" --json '{...}'` —
+   and only the fields you actually found. Leave the rest out.
+4. If the company page doesn't show what you need, leave the field out and
+   say so in your summary rather than filling in a number or category that
+   "sounds right" for a company that size or that famous.
+
 **Log all four of these, every time:** `open_job` (the navigate),
 `read_job_description` (what you extracted — seniority, must-haves — not the
 raw text), `score_job` with the `job score` response as a `retrieval` entry
@@ -166,7 +197,22 @@ python -m jobagent job queue --limit 10
 ```
 
 This is already capped by the daily quota and excludes anything applied to.
-Work the list **one job at a time**, pausing 25–70 s between applications.
+Check the response's `approval_required` field:
+
+- **`false` (default):** the list is every scored, quota-eligible job —
+  apply to them directly, as below.
+- **`true`:** `queue` only ever returns jobs someone has explicitly
+  `job approve`d — nothing else, no matter how well it scored. If `queue`
+  comes back empty, call `job pending` instead to see what's awaiting a
+  decision, surface it in your summary (title, company, score), and stop
+  there for this step: you do not have standing authorization to approve a
+  job yourself. In an interactive run, ask the user and `job approve`/
+  `job reject` on their answer, then re-run `job queue`. In an unattended
+  run (no one to ask), report the pending list and end the run without
+  applying — do not approve on your own judgment.
+
+Work the (approved) list **one job at a time**, pausing 25–70 s between
+applications.
 
 Follow browser-playbook §2 for the Easy Apply modal and §3 for screening
 questions. The two rules that matter:

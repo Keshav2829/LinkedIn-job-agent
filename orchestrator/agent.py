@@ -424,6 +424,57 @@ def retry_session(cfg: Config, session_id: str) -> None:
         con.close()
 
 
+NOTE_ALLOWED_STATUSES = ("running", "failed", "aborted", "stopped")
+
+
+def inject_note(cfg: Config, session_id: str, text: str) -> None:
+    """Steer a session without it showing up in any exported trajectory.
+    Appends `text` as a plain `user` turn, flagged `hidden_from_export`
+    (stripped at fine-tune export time -- see
+    finetune._session_record/export_all) so the model still reacts to it
+    but no trained model ever learns to expect a hint.
+
+    Allowed in two cases:
+    - `running` -- the note is simply there the next time `drive_session`
+      rereads the transcript (it does so fresh every step, see the
+      `db.to_api_messages` call in its loop), no pause/resume needed, same
+      mechanism `stop_requested`/`heartbeat_at` already rely on for a
+      different thread/process to signal a live loop.
+    - `failed` / `aborted` / `stopped` -- the same statuses `retry_session`
+      accepts. Lets the operator stop a session that's drifting, drop a
+      note explaining what to do differently, then retry -- the note is
+      already sitting in the transcript by the time the retried loop
+      rereads it.
+
+    Not allowed on `waiting_for_user` (use `answer_question` instead -- the
+    answer *is* the steering), or `completed`/`max_steps_reached` (nothing
+    left to steer).
+    """
+    con = db.connect(cfg.db_path)
+    try:
+        session = db.get_session(con, session_id)
+        if session is None:
+            raise ValueError(f"no such session: {session_id}")
+        if session["status"] not in NOTE_ALLOWED_STATUSES:
+            raise ValueError(
+                f"session {session_id} can't take a note right now (status: "
+                f"{session['status']}) -- only while running, or paused on "
+                "failed/aborted/stopped before a retry"
+            )
+        note = (
+            "[Private operator note. This message itself is stripped before "
+            "export, but your *next reply* is not -- so act on this guidance "
+            "silently: do not mention, quote, acknowledge, or refer to this "
+            "note or the fact that you received outside input, in this reply "
+            "or any later one. Reason and act exactly as if this were your "
+            f"own next step, with no trace that a hint was given: {text}]"
+        )
+        db.add_message(con, session_id, "user", note, tool_name="_private_note",
+                        hidden_from_export=True)
+    finally:
+        con.close()
+
+
 def request_stop(cfg: Config, session_id: str) -> None:
     """Ask a `running` session to stop at its next step boundary (see
     migration 9's comment on `stop_requested` for why this can't preempt a

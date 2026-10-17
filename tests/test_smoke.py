@@ -102,6 +102,57 @@ class TestFlow(unittest.TestCase):
         self.assertEqual(self.ja("job", "queue")["count"], 0)
         self.assertEqual(self.ja("run", "quota")["applications"]["used"], 1)
 
+    def test_05a_job_queue_requires_approval(self):
+        self.ja("job", "upsert", "--json", json.dumps({
+            "job_id": "1003", "title": "Senior Software Engineer",
+            "company_name": "Stripe", "location": "Bengaluru, India",
+            "url": "https://linkedin.com/jobs/view/1003", "easy_apply": 1,
+            "description": "Python, Django and AWS at scale. Kubernetes a plus.",
+        }))
+        self.ja("job", "upsert", "--json", json.dumps({
+            "job_id": "1004", "title": "Senior Software Engineer",
+            "company_name": "Stripe", "location": "Bengaluru, India",
+            "url": "https://linkedin.com/jobs/view/1004", "easy_apply": 1,
+            "description": "Python, Django and AWS at scale. Kubernetes a plus.",
+        }))
+        self.assertTrue(self.ja("job", "score", "--job-id", "1003")["auto_apply"])
+        self.assertTrue(self.ja("job", "score", "--job-id", "1004")["auto_apply"])
+
+        self.assertFalse(self.ja("job", "queue")["approval_required"])
+        self.ja("config", "set", "--json", json.dumps({"apply_requires_approval": True}))
+        try:
+            # Gate on: neither job reaches `queue`, even though both
+            # auto-scored, until explicitly approved.
+            gated = self.ja("job", "queue")
+            self.assertEqual(gated["count"], 0)
+            self.assertTrue(gated["approval_required"])
+            pending = self.ja("job", "pending")
+            self.assertEqual(pending["count"], 2)
+            self.assertEqual({j["job_id"] for j in pending["pending"]}, {"1003", "1004"})
+
+            self.ja("job", "approve", "--job-id", "1003")
+            self.ja("job", "reject", "--job-id", "1004", "--reason", "not_interested")
+
+            approved_queue = self.ja("job", "queue")
+            self.assertEqual(approved_queue["count"], 1)
+            self.assertEqual(approved_queue["jobs"][0]["job_id"], "1003")
+            # Decided jobs (either way) drop out of pending.
+            self.assertEqual(self.ja("job", "pending")["count"], 0)
+
+            missing = self.ja("job", "approve", "--job-id", "no-such-job")
+            self.assertFalse(missing["ok"])
+        finally:
+            self.ja("config", "set", "--json", json.dumps({"apply_requires_approval": False}))
+
+        # Gate off again: `queue` reverts to filtering on 'queued', so the
+        # now-'approved'/'rejected' jobs from the gated run above aren't
+        # what it looks at any more -- the decision persists (not read back
+        # into 'queued') even though nothing here actually applies to it,
+        # to avoid perturbing the application counts later tests assert on.
+        self.assertEqual(self.ja("job", "queue")["count"], 0)
+        self.assertEqual(self.ja("job", "get", "--job-id", "1003")["status"], "approved")
+        self.assertEqual(self.ja("job", "get", "--job-id", "1004")["status"], "rejected")
+
     def test_06_outreach_queue_requires_approval(self):
         self.ja("contact", "upsert", "--json", json.dumps({
             "profile_url": "https://linkedin.com/in/priya-hr", "name": "Priya Sharma",
@@ -382,6 +433,240 @@ class TestBrowse(unittest.TestCase):
         self.assertFalse(r["dialog_open"])
         self.assertLess(len(json.dumps(r)), 6000, "outline must stay bounded")
 
+    def test_06_scope_follows_a_dialog_inside_an_open_shadow_root(self):
+        """LinkedIn renders some of its own overlays -- the connect-request
+        "Add a note / Send without a note" popup among them -- inside an
+        open shadow root (its own `#interop-outlet`, not a browser
+        extension). Plain `document.querySelectorAll` never descends into
+        a shadow root, so `scope()` used to miss the dialog entirely and
+        find/text fell back to `document.body`, matching the page *behind*
+        the overlay -- the bug this guards. A decoy with the same button
+        text sits in the light DOM; `find`/`text` must resolve to the
+        shadow-hosted dialog's copy instead.
+
+        Opt-in via JOBAGENT_TEST_CDP, same as test_05.
+        """
+        cdp = os.environ.get("JOBAGENT_TEST_CDP")
+        if not cdp:
+            self.skipTest("set JOBAGENT_TEST_CDP to run the live overlay test")
+
+        page = Path(self.tmp.name) / "overlay.html"
+        page.write_text("""<!doctype html><title>profile</title>
+          <main>
+            <button>Send</button>
+            <div>Background noise that is not the real target.</div>
+          </main>
+          <div id="overlay-outlet"></div>
+          <script>
+            const root = document.getElementById('overlay-outlet').attachShadow({mode: 'open'});
+            root.innerHTML = `
+              <div role="dialog" style="position:fixed;top:40px;left:40px;
+                   width:400px;height:220px;background:#fff;">
+                <h2>Add a note</h2>
+                <textarea>Hi there, I would love to connect.</textarea>
+                <button>Send without a note</button>
+              </div>`;
+          </script>""", encoding="utf-8")
+
+        opened = self.run_raw("open", "--url", page.as_uri(), "--cdp", cdp, "--new-tab")
+        self.assertTrue(opened["ok"], opened.get("error"))
+
+        found = self.run_raw("find", "--query", "send", "--cdp", cdp, "--tab", "overlay.html")
+        self.assertTrue(found["ok"])
+        self.assertTrue(found["matches"], "shadow-hosted dialog button should have matched")
+        self.assertEqual(found["matches"][0]["name"], "Send without a note",
+                          "matched the light-DOM decoy instead of the shadow-hosted dialog's button")
+
+        text = self.run_raw("text", "--cdp", cdp, "--tab", "overlay.html")
+        self.assertTrue(text["ok"])
+        self.assertIn("Add a note", text["text"])
+        self.assertNotIn("Background noise", text["text"])
+
+    def test_07_outline_row_target_skips_a_small_nested_button(self):
+        """LinkedIn's own messaging list has no `<a href>` per row at all --
+        the row's click target is a plain `<div tabindex="0">` sized to the
+        whole row, and the only real `<button>` inside is a small "open
+        options" kebab menu. The old fallback (`a[href] -> button -> el`)
+        grabbed that kebab for every row, so clicking a conversation opened
+        a dropdown instead of the thread -- the bug this guards. The
+        stamped ref must resolve to the row-sized div, not the button.
+
+        Opt-in via JOBAGENT_TEST_CDP, same as test_05.
+        """
+        cdp = os.environ.get("JOBAGENT_TEST_CDP")
+        if not cdp:
+            self.skipTest("set JOBAGENT_TEST_CDP to run the live row-target test")
+
+        page = Path(self.tmp.name) / "rows.html"
+        page.write_text("""<!doctype html><title>inbox</title>
+          <style>
+            .row { position: relative; width: 300px; height: 90px; }
+            .row-link { position: absolute; inset: 0; cursor: pointer; }
+            .kebab { position: absolute; top: 4px; right: 4px; width: 24px; height: 24px; }
+          </style>
+          <ul>
+            <li class="row" id="row1">
+              <div class="row-link" tabindex="0" onclick="document.title='opened-1'">Alice Jun 1 Hi there</div>
+              <button class="kebab" onclick="document.title='menu-1'">...</button>
+            </li>
+            <li class="row" id="row2">
+              <div class="row-link" tabindex="0" onclick="document.title='opened-2'">Bob Jun 2 Hello</div>
+              <button class="kebab" onclick="document.title='menu-2'">...</button>
+            </li>
+            <li class="row" id="row3">
+              <div class="row-link" tabindex="0" onclick="document.title='opened-3'">Cara Jun 3 Hey</div>
+              <button class="kebab" onclick="document.title='menu-3'">...</button>
+            </li>
+          </ul>""", encoding="utf-8")
+
+        opened = self.run_raw("open", "--url", page.as_uri(), "--cdp", cdp, "--new-tab")
+        self.assertTrue(opened["ok"], opened.get("error"))
+
+        r = self.run_raw("outline", "--cdp", cdp, "--tab", "rows.html")
+        self.assertTrue(r["ok"])
+        self.assertEqual(len(r["rows"]), 3)
+
+        clicked = self.run_raw("click", "--ref", r["rows"][1]["ref"], "--cdp", cdp, "--tab", "rows.html")
+        self.assertTrue(clicked["ok"], clicked.get("error"))
+
+        status = self.run_raw("status", "--cdp", cdp, "--tab", "rows.html")
+        self.assertEqual(status["active"]["title"], "opened-2",
+                          "clicked the row's kebab menu instead of the row itself")
+
+    def test_08_scroll_moves_an_inner_container_not_just_window(self):
+        """LinkedIn almost never scrolls `window` -- the real scrollbar sits
+        on an inner container under a fixed header (`<main id="workspace">`
+        on the invitation manager, messaging list, etc.), so
+        `document.scrollingElement` never moves. The old `scroll` wheeled
+        whatever the mouse's default (0, 0) position happened to be over --
+        the fixed header, not the content -- so nothing on the page moved.
+        This fixture reproduces that shape with an onscroll handler as a
+        side-effect probe; the bug this guards is a title that never changes.
+
+        Opt-in via JOBAGENT_TEST_CDP, same as test_05.
+        """
+        cdp = os.environ.get("JOBAGENT_TEST_CDP")
+        if not cdp:
+            self.skipTest("set JOBAGENT_TEST_CDP to run the live scroll test")
+
+        page = Path(self.tmp.name) / "innerscroll.html"
+        items = "".join(f'<div class="item">item {i}</div>' for i in range(40))
+        page.write_text(f"""<!doctype html><title>list</title>
+          <style>
+            html, body {{ margin: 0; height: 100%; }}
+            header {{ position: fixed; top: 0; left: 0; right: 0; height: 50px;
+                      background: #eee; z-index: 2; }}
+            main {{ position: absolute; top: 50px; left: 0; right: 0; bottom: 0;
+                    overflow-y: auto; }}
+            .item {{ height: 60px; border-bottom: 1px solid #ccc; }}
+          </style>
+          <header>fixed header, not the scroll container</header>
+          <main id="workspace"
+                onscroll="document.title = 'scrolled-' + Math.round(this.scrollTop)">
+            {items}
+          </main>""", encoding="utf-8")
+
+        opened = self.run_raw("open", "--url", page.as_uri(), "--cdp", cdp, "--new-tab")
+        self.assertTrue(opened["ok"], opened.get("error"))
+
+        scrolled = self.run_raw("scroll", "--dy", "600", "--cdp", cdp, "--tab", "innerscroll.html")
+        self.assertTrue(scrolled["ok"], scrolled.get("error"))
+
+        status = self.run_raw("status", "--cdp", cdp, "--tab", "innerscroll.html")
+        title = status["active"]["title"]
+        self.assertTrue(title.startswith("scrolled-"),
+                         f"scroll never reached the inner container, title is {title!r}")
+        self.assertGreater(int(title.split("-", 1)[1]), 0,
+                            "onscroll fired but scrollTop did not advance")
+
+    def test_09_fill_types_newlines_without_submitting_a_richtext_box(self):
+        """LinkedIn's message compose box is a contenteditable richtext
+        editor that binds a bare Enter to *submit* (there's a "Press Enter
+        to send" toggle right next to it) -- Shift+Enter is "new line".
+        `fill` used to hand the whole multi-line value to Playwright's
+        `.type()`, which turns each "\n" into a literal Enter keypress, so
+        it could submit a half-typed body instead of inserting a line
+        break. This fixture reproduces that exact keydown contract (bare
+        Enter -> preventDefault + record a premature "submit") and the bug
+        this guards is that side effect firing at all.
+
+        Opt-in via JOBAGENT_TEST_CDP, same as test_05.
+        """
+        cdp = os.environ.get("JOBAGENT_TEST_CDP")
+        if not cdp:
+            self.skipTest("set JOBAGENT_TEST_CDP to run the live fill test")
+
+        page = Path(self.tmp.name) / "compose.html"
+        page.write_text("""<!doctype html><title>compose</title>
+          <div contenteditable="true" role="textbox" aria-label="Write a message"
+               id="box"></div>
+          <script>
+            document.getElementById('box').addEventListener('keydown', (e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                document.title = 'submitted-early';
+              }
+            });
+          </script>""", encoding="utf-8")
+
+        opened = self.run_raw("open", "--url", page.as_uri(), "--cdp", cdp, "--new-tab")
+        self.assertTrue(opened["ok"], opened.get("error"))
+
+        form = self.run_raw("form", "--cdp", cdp, "--tab", "compose.html")
+        self.assertTrue(form["ok"], form.get("error"))
+        field = next(f for f in form["fields"] if "write a message" in f["label"].lower())
+
+        body = "line one\nline two\nline three"
+        filled = self.run_raw("fill", "--ref", field["ref"], "--value", body,
+                               "--cdp", cdp, "--tab", "compose.html")
+        self.assertTrue(filled["ok"], filled.get("error"))
+        self.assertTrue(filled["matches"],
+                         f"typed body did not round-trip: {filled['value']!r}")
+
+        status = self.run_raw("status", "--cdp", cdp, "--tab", "compose.html")
+        self.assertNotEqual(status["active"]["title"], "submitted-early",
+                             "a bare Enter fired mid-type -- the box would have submitted early")
+
+    def test_10_fill_value_accepts_a_literal_backslash_n_from_the_shell(self):
+        """No shell -- bash, PowerShell, cmd -- turns a literal `\\n` typed
+        inside a quoted `--value` into a real newline; all three hand it to
+        the process as the two characters backslash + n. That is exactly
+        how a human or an LLM-driven agent naturally writes a multi-line
+        message body on one command line, so the CLI decodes it before it
+        ever reaches `fill`. This test builds the argv the way a shell
+        actually would -- a Python string containing a literal backslash
+        and 'n', not a real newline -- to catch a regression where that
+        decode is lost and the box ends up with the literal text "\\n" in
+        it instead of a line break.
+
+        Opt-in via JOBAGENT_TEST_CDP, same as test_05.
+        """
+        cdp = os.environ.get("JOBAGENT_TEST_CDP")
+        if not cdp:
+            self.skipTest("set JOBAGENT_TEST_CDP to run the live fill test")
+
+        page = Path(self.tmp.name) / "compose2.html"
+        page.write_text("""<!doctype html><title>compose2</title>
+          <div contenteditable="true" role="textbox" aria-label="Write a message"
+               id="box"></div>""", encoding="utf-8")
+
+        opened = self.run_raw("open", "--url", page.as_uri(), "--cdp", cdp, "--new-tab")
+        self.assertTrue(opened["ok"], opened.get("error"))
+
+        form = self.run_raw("form", "--cdp", cdp, "--tab", "compose2.html")
+        field = next(f for f in form["fields"] if "write a message" in f["label"].lower())
+
+        # literal backslash-n, two characters, not an embedded newline -- the
+        # shape a shell argument actually has.
+        shell_value = "line one\\nline two\\nline three"
+        filled = self.run_raw("fill", "--ref", field["ref"], "--value", shell_value,
+                               "--cdp", cdp, "--tab", "compose2.html")
+        self.assertTrue(filled["ok"], filled.get("error"))
+        self.assertNotIn("\\n", filled["value"],
+                          "literal backslash-n was typed as text instead of decoded to a newline")
+        self.assertEqual(filled["value"].count("\n"), 2,
+                          f"expected two real line breaks, got {filled['value']!r}")
+
 
 class TestHarvest(unittest.TestCase):
     """`trace log` records what the agent remembered; harvest records what
@@ -603,6 +888,70 @@ class TestBrowserResilience(unittest.TestCase):
             self.assertEqual(B.DEFAULT_TIMEOUT_MS, 30000, "0 must not disable it")
         finally:
             B.DEFAULT_TIMEOUT_MS = before
+
+    def test_05_a_persistently_intercepted_click_falls_back_to_force(self):
+        """A shadow-DOM overlay (a browser extension in the CDP profile, not
+        LinkedIn's own UI) that covers the target on every attempt is not the
+        transient "not yet settled" case the retry loop was built for —
+        waiting and re-locating never clears it. The last attempt must
+        bypass Playwright's actionability check instead of just giving up."""
+        from contextlib import contextmanager
+
+        from jobagent import browser as B
+
+        class FakeLocator:
+            def __init__(self):
+                self.click_calls = []
+
+            def inner_text(self):
+                return "Apply"
+
+            def get_attribute(self, name):
+                return None
+
+            def scroll_into_view_if_needed(self):
+                pass
+
+            def bounding_box(self):
+                return {"x": 10, "y": 20, "width": 100, "height": 30}
+
+            def click(self, force=False):
+                self.click_calls.append(force)
+                if not force:
+                    raise RuntimeError(
+                        "Locator.click: Timeout 15000ms exceeded.\n"
+                        '<div id="interop-shadowdom">...</div> intercepts pointer events'
+                    )
+
+        class FakePage:
+            def wait_for_timeout(self, ms):
+                pass
+
+            def wait_for_load_state(self, *a, **kw):
+                pass
+
+        loc = FakeLocator()
+        page = FakePage()
+
+        @contextmanager
+        def fake_session(cdp_url=None, tab=None):
+            yield page, None
+
+        state = {"url": "https://linkedin.com/x", "scroll": [0, 0], "viewport": [1000, 800]}
+
+        orig = (B.session, B._prime, B._locate, B._state)
+        B.session, B._prime = fake_session, (lambda p: None)
+        B._locate = lambda p, ref, db_path=None: loc
+        B._state = lambda p: state
+        try:
+            res = B.click(ref="e1")
+        finally:
+            B.session, B._prime, B._locate, B._state = orig
+
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["attempts"], 2)
+        self.assertEqual(loc.click_calls, [False, True],
+                          "second attempt must pass force=True, not retry plain")
 
 
 if __name__ == "__main__":

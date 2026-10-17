@@ -112,7 +112,9 @@ MIGRATIONS: list[str] = [
         match_score   INTEGER,
         match_reasons TEXT NOT NULL DEFAULT '[]',
         status        TEXT NOT NULL DEFAULT 'new',
-        -- new|scored|queued|applied|skipped|failed|external|closed
+        -- new|scored|queued|approved|rejected|applied|skipped|failed|external|closed
+        -- approved/rejected only ever appear when config.apply_requires_approval
+        -- is on -- see cmd_job's "approve"/"reject"/"queue" in cli.py
         skip_reason   TEXT,
         discovered_at TEXT NOT NULL,
         updated_at    TEXT NOT NULL

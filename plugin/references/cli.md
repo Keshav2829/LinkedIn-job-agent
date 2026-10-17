@@ -38,7 +38,9 @@ human* — never guess.
 | `job seen --job-id X` | cheap dedupe before opening a card |
 | `job upsert --json '{job_id,title,company_name,location,url,easy_apply,workplace,posted,description}'` | record a discovery |
 | `job score --job-id X` | score it; returns `{score, reasons, status, auto_apply}` |
-| `job queue [--min-score N] [--limit N]` | what to apply to now, already quota-capped |
+| `job queue [--min-score N] [--limit N]` | what to apply to now, already quota-capped. Returns `approval_required`; when `true`, this only ever lists `approve`d jobs — see `job pending` |
+| `job pending [--min-score N] [--limit N]` | scored, quota-eligible jobs awaiting a decision (only meaningful once `job approve`/`reject` is in the picture) |
+| `job approve --job-id X` / `job reject --job-id X [--reason R]` | decide a pending job; only relevant when `config.apply_requires_approval` is on |
 | `job applied --job-id X [--answers '{}'] [--screening '[]'] [--notes]` | after the confirmation dialog only |
 | `job skip --job-id X --reason R` | external ATS, needs_human, closed, etc. |
 | `job list --status applied\|queued\|skipped` | |
@@ -47,7 +49,8 @@ human* — never guess.
 
 | Command | Use |
 |---|---|
-| `company upsert --name N --json '{kind,headcount,industry,linkedin_url}'` | |
+| `company get --name N` | check before re-verifying kind/headcount on the company's LinkedIn page — `{found: false}` if nothing stored yet |
+| `company upsert --name N --json '{kind,headcount,industry,linkedin_url}'` | only include a field you actually verified (company page's About/People sections) — never fill kind/headcount from assumption, even for a well-known company; see linkedin-apply/SKILL.md §3 |
 | `company blacklist --name N` | never apply again |
 | `contact seen --url U` | returns `recommend: ok\|skip` (cooldown + do-not-contact) |
 | `contact upsert --json '{profile_url,name,headline,company_name,role_type,degree,mutual_count,is_alumni,alumni_school}'` | `profile_url` is required — it's the unique key contacts are matched on. If a "Meet the hiring team" panel entry has no clickable profile link, it can't be recorded as a contact; skip it. |
